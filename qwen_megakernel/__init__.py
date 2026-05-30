@@ -1,9 +1,31 @@
-"""Qwen Megakernel — single-kernel Qwen3-0.6B decode for RTX 5090."""
+"""Qwen Megakernel decode helpers for text and Qwen3-TTS.
 
-from qwen_megakernel.build import get_extension as _get_ext
+CUDA extension builds are deferred until the corresponding decoder module is
+imported. This keeps the text and TTS build variants from compiling on ordinary
+package import.
+"""
 
-_get_ext()
+__all__ = [
+    "load_weights",
+    "Decoder",
+    "generate",
+    "MegakernelTTSEngine",
+    "TTSConfig",
+    "MegakernelTTSService",
+]
 
-from qwen_megakernel.model import load_weights, Decoder, generate  # noqa: E402
 
-__all__ = ["load_weights", "Decoder", "generate"]
+def __getattr__(name):
+    if name in {"load_weights", "Decoder", "generate"}:
+        from qwen_megakernel import model
+
+        return getattr(model, name)
+    if name in {"MegakernelTTSEngine", "TTSConfig"}:
+        from qwen_megakernel import tts_engine
+
+        return getattr(tts_engine, name)
+    if name == "MegakernelTTSService":
+        from qwen_megakernel import pipecat_tts
+
+        return pipecat_tts.MegakernelTTSService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

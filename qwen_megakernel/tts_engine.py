@@ -10,6 +10,7 @@ Streaming: yields audio chunks as codec frames accumulate.
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Generator, Optional
 
@@ -69,6 +70,27 @@ class MegakernelTTSEngine:
         self.config = config or TTSConfig()
         self.device = device
         self._initialized = False
+        self._init_t0 = None
+
+    def _log(self, message: str):
+        """Print an engine progress message with elapsed init time when available."""
+        if self._init_t0 is None:
+            print(f"[TTS] {message}", flush=True)
+            return
+        elapsed = time.perf_counter() - self._init_t0
+        print(f"[TTS +{elapsed:7.2f}s] {message}", flush=True)
+
+    def _sync(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _timed(self, label: str, fn):
+        self._log(f"{label}...")
+        t0 = time.perf_counter()
+        result = fn()
+        self._sync()
+        self._log(f"{label} done in {time.perf_counter() - t0:.2f}s")
+        return result
 
     def initialize(self):
         """Load all model components. Call once before generation."""
@@ -76,16 +98,20 @@ class MegakernelTTSEngine:
             return
 
         cfg = self.config
-        print("Initializing MegakernelTTSEngine...")
+        self._init_t0 = time.perf_counter()
+        self._log("Initializing MegakernelTTSEngine")
 
         # Load weights
-        weights = load_tts_weights(cfg.model_path, device=self.device, verbose=True)
+        weights = self._timed(
+            f"Loading TTS weights from {cfg.model_path}",
+            lambda: load_tts_weights(cfg.model_path, device=self.device, verbose=True),
+        )
 
         # Initialize components (TTSDecoder triggers JIT compilation)
-        self.talker = TTSDecoder(weights=weights)
-        self.text_projection = TextProjection(weights, device=self.device)
+        self.talker = self._timed("Initializing talker decoder / compiling TTS extension", lambda: TTSDecoder(weights=weights))
+        self.text_projection = self._timed("Initializing text projection", lambda: TextProjection(weights, device=self.device))
         # Use megakernel-accelerated code predictor (~18x faster than PyTorch)
-        self.code_predictor = CodePredictorKernel(weights, device=self.device)
+        self.code_predictor = self._timed("Initializing code predictor kernel wrapper", lambda: CodePredictorKernel(weights, device=self.device))
 
         # Codec embedding tables (for summing all codebook group embeddings)
         self._talker_embed = weights["embed_weight"]  # [3072, 1024] - group 0
@@ -96,13 +122,17 @@ class MegakernelTTSEngine:
             )
 
         # Load tokenizer (text)
+        self._log("Loading text tokenizer...")
         from transformers import AutoTokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
+        self._log("Text tokenizer loaded")
 
         # Load speech tokenizer (vocoder)
-        self._load_vocoder(cfg.vocoder_path)
+        self._timed(f"Loading vocoder from {cfg.vocoder_path}", lambda: self._load_vocoder(cfg.vocoder_path))
 
         # Precompute constant embeddings (TTS special tokens + role tokens + codec tags)
+        self._log("Precomputing constant embeddings...")
+        t0 = time.perf_counter()
         with torch.no_grad():
             special_ids = torch.tensor([TTS_PAD, TTS_BOS, TTS_EOS], device=self.device)
             special_embeds = self.text_projection.embed_text_ids(special_ids)
@@ -135,25 +165,38 @@ class MegakernelTTSEngine:
 
             # Precompute codec BOS embedding (last in codec sequence)
             self._cached_codec_bos = codec_embeds[4:5]  # [1, 1024]
+        self._sync()
+        self._log(f"Constant embeddings ready in {time.perf_counter() - t0:.2f}s")
 
         # Warm up entire pipeline (first calls are slow due to CUDA JIT/cublas init)
-        print("Warming up pipeline...")
-        for do_sample in [False, False, True, True, True]:
+        self._log("Warming up pipeline...")
+        for i, do_sample in enumerate([False, False, True, True, True], start=1):
+            label = "sampling" if do_sample else "argmax"
+            self._log(f"Warmup {i}/5 ({label}): talker step + code predictor...")
+            t0 = time.perf_counter()
             self.talker.reset()
             _, h = self.talker.step(CODEC_BOS)
             self.code_predictor.predict(
                 h, 0, self._talker_embed,
                 do_sample=do_sample, temperature=0.9, top_k=50,
             )
+            self._sync()
+            self._log(f"Warmup {i}/5 ({label}) done in {time.perf_counter() - t0:.2f}s")
         self.talker.reset()
         if self.speech_tokenizer is not None:
-            for n in [1, 1, 5]:
+            for i, n in enumerate([1, 1, 5], start=1):
+                self._log(f"Vocoder warmup {i}/3 ({n} frame(s))...")
+                t0 = time.perf_counter()
                 dummy_codes = torch.randint(0, 2048, (n, NUM_CODE_GROUPS), dtype=torch.long, device=self.device)
                 self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
-        torch.cuda.synchronize()
+                self._sync()
+                self._log(f"Vocoder warmup {i}/3 done in {time.perf_counter() - t0:.2f}s")
+        else:
+            self._log("Skipping vocoder warmup because vocoder is unavailable")
+        self._sync()
 
         self._initialized = True
-        print("MegakernelTTSEngine initialized.")
+        self._log("MegakernelTTSEngine initialized")
 
     def _load_vocoder(self, vocoder_path: str):
         """Load the speech tokenizer for codec → waveform decoding."""
@@ -199,14 +242,14 @@ class MegakernelTTSEngine:
             self.speech_tokenizer.config = model.config
             self.speech_tokenizer.device = model.device
             self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
-            print(f"Vocoder loaded (sample rate: {self.sample_rate} Hz)")
+            self._log(f"Vocoder loaded (sample rate: {self.sample_rate} Hz)")
             return
         except Exception as e:
-            print(f"Vocoder load failed: {e}")
+            self._log(f"Vocoder load failed: {e}")
 
         self.speech_tokenizer = None
         self.sample_rate = self.config.sample_rate
-        print("Warning: Vocoder unavailable. Audio output will be silence.")
+        self._log("Warning: Vocoder unavailable. Audio output will be silence")
 
     @torch.no_grad()
     def synthesize(self, text: str, ref_audio: Optional[np.ndarray] = None) -> tuple[np.ndarray, int]:
@@ -227,20 +270,30 @@ class MegakernelTTSEngine:
         chunk_size = chunk_frames or self.config.chunk_frames
         buffer = []
         first_chunk = True
+        chunk_idx = 0
+        self._log(f"Starting streaming synthesis: chunk_frames={chunk_size}, text_len={len(text)}")
 
         for frame in self._generate_codec_frames(text):
             buffer.append(frame)
             # Use smaller first chunk (1 frame) for fast TTFC, then normal chunk size
             target = 1 if first_chunk else chunk_size
             if len(buffer) >= target:
+                chunk_idx += 1
+                self._log(f"Decoding audio chunk {chunk_idx} from {len(buffer)} codec frame(s)...")
+                t0 = time.perf_counter()
                 audio, sr = self._decode_to_audio(buffer)
+                self._log(f"Audio chunk {chunk_idx} decoded in {time.perf_counter() - t0:.2f}s ({len(audio)} samples)")
                 buffer = []
                 first_chunk = False
                 yield audio, sr
                 await asyncio.sleep(0)
 
         if buffer:
+            chunk_idx += 1
+            self._log(f"Decoding final audio chunk {chunk_idx} from {len(buffer)} codec frame(s)...")
+            t0 = time.perf_counter()
             audio, sr = self._decode_to_audio(buffer)
+            self._log(f"Final audio chunk {chunk_idx} decoded in {time.perf_counter() - t0:.2f}s ({len(audio)} samples)")
             yield audio, sr
 
     def _generate_codec_frames(self, text: str) -> Generator[torch.Tensor, None, None]:
@@ -251,6 +304,8 @@ class MegakernelTTSEngine:
         """
         cfg = self.config
         self.talker.reset()
+        self._log("Preparing codec frame generator")
+        t_gen_start = time.perf_counter()
 
         # Tokenize only the content text (role tokens are precomputed)
         # Format: <|im_start|>assistant\n TEXT <|im_end|>\n<|im_start|>assistant\n
@@ -258,9 +313,13 @@ class MegakernelTTSEngine:
         formatted_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
         text_ids = self.tokenizer.encode(formatted_text, return_tensors="pt")[0]
         content_ids = text_ids[3:].to(self.device)
+        self._log(f"Tokenized text: total_tokens={text_ids.numel()}, content_tokens={content_ids.numel()}")
 
         # Embed content tokens (single batched call — role/tags/special are precomputed)
+        t0 = time.perf_counter()
         content_embeds = self.text_projection.embed_text_ids(content_ids)
+        self._sync()
+        self._log(f"Projected text embeddings in {time.perf_counter() - t0:.2f}s")
         first_text_with_bos = content_embeds[:1] + self._cached_codec_bos
 
         # Build prefill: [role(3), fused_tags(4), first_text+bos(1)] = 8 steps
@@ -278,15 +337,23 @@ class MegakernelTTSEngine:
         ], dim=0)
 
         # Phase 1: Prefill — feed all prefill embeddings through the talker
+        self._log(f"Running talker prefill ({prefill_embeds.shape[0]} step(s))...")
+        t0 = time.perf_counter()
         for i in range(prefill_embeds.shape[0]):
             self.talker.step_with_embed(prefill_embeds[i])
+        self._sync()
+        self._log(f"Talker prefill done in {time.perf_counter() - t0:.2f}s")
 
         # Phase 2: Autoregressive decode
         trailing_idx = 0
         tts_pad_embed = self._tts_pad_embed
 
         # First decode step
+        self._log("Running first talker decode step...")
+        t0 = time.perf_counter()
         first_token, hidden = self.talker.step(CODEC_BOS)
+        self._sync()
+        self._log(f"First talker decode produced token={first_token} in {time.perf_counter() - t0:.2f}s")
 
         prev_token = first_token
 
@@ -297,12 +364,17 @@ class MegakernelTTSEngine:
         estimated_speech_sec = word_count / 2.5
         max_frames = max(int(estimated_speech_sec * 12.5 * 2.0), 25)
         max_frames = min(max_frames, cfg.max_new_tokens)
+        self._log(f"Generating up to {max_frames} codec frame(s) for {word_count} word(s)")
 
         for step in range(max_frames):
             if prev_token == CODEC_EOS:
+                self._log(f"Stopping at frame {step}: talker emitted CODEC_EOS")
                 break
 
             # Run code predictor (megakernel-accelerated)
+            if step < 3 or (step + 1) % 10 == 0:
+                self._log(f"Generating codec frame {step + 1}/{max_frames}...")
+            frame_t0 = time.perf_counter()
             all_codes = self.code_predictor.predict(
                 talker_hidden=hidden,
                 first_codebook_token=prev_token,
@@ -311,6 +383,9 @@ class MegakernelTTSEngine:
                 temperature=cfg.subtalker_temperature,
                 top_k=cfg.subtalker_top_k,
             )  # [NUM_CODE_GROUPS] int64
+            self._sync()
+            if step < 3 or (step + 1) % 10 == 0:
+                self._log(f"Codec frame {step + 1}/{max_frames} ready in {time.perf_counter() - frame_t0:.2f}s")
 
             yield all_codes
 
@@ -333,6 +408,7 @@ class MegakernelTTSEngine:
                 embed_sum = embed_sum + tts_pad_embed
 
             prev_token, hidden = self.talker.step_with_embed(embed_sum)
+        self._log(f"Codec frame generation finished in {time.perf_counter() - t_gen_start:.2f}s")
 
     def _decode_to_audio(self, codec_frames: list[torch.Tensor]) -> tuple[np.ndarray, int]:
         """Decode codec frames to audio waveform."""

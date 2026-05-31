@@ -168,29 +168,61 @@ class MegakernelTTSEngine:
         self._sync()
         self._log(f"Constant embeddings ready in {time.perf_counter() - t0:.2f}s")
 
-        # Warm up entire pipeline (first calls are slow due to CUDA JIT/cublas init)
-        self._log("Warming up pipeline...")
-        for i, do_sample in enumerate([False, False, True, True, True], start=1):
+        # Warm up both deterministic and sampling paths. First calls are slow due
+        # to CUDA JIT/cublas and PyTorch sampling kernel initialization.
+        warmup_modes = [False, True]
+        self._log(
+            "Warming up talker/code predictor "
+            f"({len(warmup_modes)} pass(es): argmax + sampling)"
+        )
+        for i, do_sample in enumerate(warmup_modes, start=1):
             label = "sampling" if do_sample else "argmax"
-            self._log(f"Warmup {i}/5 ({label}): talker step + code predictor...")
+            self._log(
+                f"Warmup {i}/{len(warmup_modes)} ({label}): "
+                "resetting talker and running first decode step..."
+            )
             t0 = time.perf_counter()
             self.talker.reset()
             _, h = self.talker.step(CODEC_BOS)
+            self._sync()
+            self._log(
+                f"Warmup {i}/{len(warmup_modes)} ({label}): "
+                "running code predictor..."
+            )
             self.code_predictor.predict(
                 h, 0, self._talker_embed,
                 do_sample=do_sample, temperature=0.9, top_k=50,
             )
             self._sync()
-            self._log(f"Warmup {i}/5 ({label}) done in {time.perf_counter() - t0:.2f}s")
+            self._log(
+                f"Warmup {i}/{len(warmup_modes)} ({label}) done "
+                f"in {time.perf_counter() - t0:.2f}s"
+            )
         self.talker.reset()
         if self.speech_tokenizer is not None:
-            for i, n in enumerate([1, 1, 5], start=1):
-                self._log(f"Vocoder warmup {i}/3 ({n} frame(s))...")
+            vocoder_warmup_frames = [1, 5]
+            self._log(
+                "Warming up vocoder "
+                f"({len(vocoder_warmup_frames)} pass(es): "
+                f"{vocoder_warmup_frames} codec frame batches)"
+            )
+            for i, n in enumerate(vocoder_warmup_frames, start=1):
+                self._log(
+                    f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
+                    f"({n} frame(s)): creating dummy codec codes..."
+                )
                 t0 = time.perf_counter()
                 dummy_codes = torch.randint(0, 2048, (n, NUM_CODE_GROUPS), dtype=torch.long, device=self.device)
+                self._log(
+                    f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
+                    "decoding dummy audio..."
+                )
                 self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
                 self._sync()
-                self._log(f"Vocoder warmup {i}/3 done in {time.perf_counter() - t0:.2f}s")
+                self._log(
+                    f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
+                    f"done in {time.perf_counter() - t0:.2f}s"
+                )
         else:
             self._log("Skipping vocoder warmup because vocoder is unavailable")
         self._sync()

@@ -201,6 +201,7 @@ def _client_label(client) -> str:
 
 async def run_bot(transport):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
     from pipecat.observers.loggers.transcription_log_observer import TranscriptionLogObserver
     from pipecat.pipeline.pipeline import Pipeline
@@ -211,8 +212,38 @@ async def run_bot(transport):
         LLMContextAggregatorPair,
         LLMUserAggregatorParams,
     )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
     from pipecat.services.deepgram.stt import DeepgramSTTService
     from pipecat.services.openai.llm import OpenAILLMService
+
+    class ContextWindowTrimmer(FrameProcessor):
+        """Cap chat history before each LLM run to keep prompts (and TTFB) small.
+
+        Keeps every ``system``/``developer`` message plus the last
+        ``max_messages`` conversational turns; older entries are dropped.
+        """
+
+        def __init__(self, ctx, max_messages: int):
+            super().__init__()
+            self._ctx = ctx
+            self._max = max_messages
+
+        def _trim(self):
+            msgs = list(self._ctx.messages)
+            convo = [m for m in msgs if m.get("role") not in ("system", "developer")]
+            if len(convo) <= self._max:
+                return
+            anchors = [m for m in msgs if m.get("role") in ("system", "developer")]
+            self._ctx.set_messages(anchors + convo[-self._max:])
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if direction == FrameDirection.DOWNSTREAM and isinstance(frame, LLMRunFrame):
+                try:
+                    self._trim()
+                except Exception as exc:
+                    logger.warning("ContextWindowTrimmer trim failed: %s", exc)
+            await self.push_frame(frame, direction)
 
     require_env("DEEPGRAM_API_KEY", "OPENAI_API_KEY")
 
@@ -240,15 +271,24 @@ async def run_bot(transport):
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+        ),
     )
 
-    logger.info("Building voice pipeline: transport_in -> STT -> LLM -> TTS -> transport_out")
+    history_max = int(os.getenv("BOT_HISTORY_MAX_MESSAGES", "8"))
+    context_trimmer = ContextWindowTrimmer(context, max_messages=history_max)
+    logger.info(
+        "Building voice pipeline: transport_in -> STT -> trimmer -> LLM -> TTS -> "
+        "transport_out (history_max=%d)",
+        history_max,
+    )
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
             user_aggregator,
+            context_trimmer,
             llm,
             tts,
             transport.output(),
@@ -336,6 +376,7 @@ async def run_bot(transport):
 
 async def bot(runner_args):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.runner.utils import create_transport
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.daily.transport import DailyParams
@@ -351,13 +392,13 @@ async def bot(runner_args):
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 audio_out_sample_rate=24000,
-                vad_analyzer=SileroVADAnalyzer(),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
             ),
             "webrtc": lambda: TransportParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 audio_out_sample_rate=24000,
-                vad_analyzer=SileroVADAnalyzer(),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
             ),
         },
     )

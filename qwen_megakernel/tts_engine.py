@@ -28,6 +28,7 @@ from .model_tts import (
     CODEC_PAD,
     CODEC_THINK_BOS,
     CODEC_THINK_EOS,
+    HIDDEN_SIZE,
     NUM_CODE_GROUPS,
     TTS_BOS,
     TTS_EOS,

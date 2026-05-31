@@ -200,6 +200,9 @@ class MegakernelTTSService(TTSService):
         # be delivered in order. Releasing the lock early (buffering first)
         # would break chunked streaming by delaying all audio to end-of-synthesis.
         async with self._tts_lock:
+            # Ensure engine is initialised before reading sample_rate so we
+            # never hit 'has no attribute sample_rate' on early frames.
+            await asyncio.get_event_loop().run_in_executor(None, self._ensure_engine)
             sample_rate = self._engine.sample_rate if self._engine else 24000
             async for frame in self._stream_audio_frames_from_iterator(
                 self._synthesize_pcm(text, context_id),

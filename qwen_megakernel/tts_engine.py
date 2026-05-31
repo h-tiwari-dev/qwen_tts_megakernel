@@ -423,8 +423,24 @@ class MegakernelTTSEngine:
 
     def _load_vocoder(self, vocoder_path: str):
         """Load the speech tokenizer for codec → waveform decoding."""
-        # Strategy: load the speech tokenizer model directly from the
-        # speech_tokenizer/ subfolder, bypassing the broken AutoFeatureExtractor path.
+        target_device = _normalize_torch_device(self.device)
+        try:
+            from qwen_tts import Qwen3TTSTokenizer
+
+            self.speech_tokenizer = Qwen3TTSTokenizer.from_pretrained(
+                vocoder_path,
+                device_map=target_device,
+                dtype=torch.bfloat16,
+                attn_implementation="eager",
+            )
+            self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
+            self._log(f"Vocoder loaded via Qwen3TTSTokenizer (sample rate: {self.sample_rate} Hz)")
+            return
+        except Exception as e:
+            self._log(f"Official vocoder load failed, trying manual loader: {e}")
+
+        # Fallback: load the speech tokenizer model directly from the
+        # speech_tokenizer/ subfolder, bypassing AutoFeatureExtractor.
         try:
             # Monkey-patch transformers if needed (qwen_tts compat with transformers 5.x)
             import transformers.utils.generic
@@ -453,10 +469,10 @@ class MegakernelTTSEngine:
             model = AutoModel.from_pretrained(
                 vocoder_path,
                 subfolder='speech_tokenizer',
+                dtype=torch.bfloat16,
                 low_cpu_mem_usage=False,
                 trust_remote_code=True,
             )
-            target_device = _normalize_torch_device(self.device)
             try:
                 model = model.to(target_device)
             except NotImplementedError as exc:

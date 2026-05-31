@@ -35,6 +35,48 @@ from .model_tts import (
 )
 
 
+def _import_transformers_auto(name: str):
+    """Import HF auto classes with a clearer error for broken environments."""
+    try:
+        import transformers
+        value = getattr(transformers, name, None)
+        if value is not None:
+            return value
+    except Exception as exc:
+        top_level_error = exc
+    else:
+        top_level_error = None
+
+    fallback_modules = {
+        "AutoTokenizer": "transformers.models.auto.tokenization_auto",
+        "AutoConfig": "transformers.models.auto.configuration_auto",
+        "AutoModel": "transformers.models.auto.modeling_auto",
+    }
+    module_name = fallback_modules.get(name)
+    if module_name is not None:
+        try:
+            module = __import__(module_name, fromlist=[name])
+            return getattr(module, name)
+        except Exception as exc:
+            fallback_error = exc
+        else:
+            fallback_error = None
+    else:
+        fallback_error = None
+
+    details = []
+    if top_level_error is not None:
+        details.append(f"top-level import failed: {top_level_error}")
+    if fallback_error is not None:
+        details.append(f"fallback import failed: {fallback_error}")
+    detail = "; ".join(details) or f"{name} was not exported by transformers"
+    raise ImportError(
+        f"Could not import {name} from Hugging Face transformers ({detail}). "
+        "Reinstall the supported stack with: "
+        "python -m pip install --force-reinstall 'transformers==4.57.3' 'qwen-tts==0.1.1'"
+    )
+
+
 @dataclass
 class TTSConfig:
     """Configuration for the TTS engine."""
@@ -125,7 +167,7 @@ class MegakernelTTSEngine:
 
         # Load tokenizer (text)
         self._log("Loading text tokenizer...")
-        from transformers import AutoTokenizer
+        AutoTokenizer = _import_transformers_auto("AutoTokenizer")
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
         self._log("Text tokenizer loaded")
 
@@ -257,7 +299,8 @@ class MegakernelTTSEngine:
                     return decorator
                 transformers.utils.generic.check_model_inputs = _check_model_inputs
 
-            from transformers import AutoConfig, AutoModel
+            AutoConfig = _import_transformers_auto("AutoConfig")
+            AutoModel = _import_transformers_auto("AutoModel")
             from qwen_tts.core import (
                 Qwen3TTSTokenizerV2Config,
                 Qwen3TTSTokenizerV2Model,

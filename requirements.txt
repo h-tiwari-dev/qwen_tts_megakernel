@@ -1,5 +1,5 @@
 torch>=2.7.0
-transformers>=4.40.0
+transformers==4.57.3
 triton>=2.2.0
 safetensors
 ninja
@@ -8,5 +8,5 @@ soundfile
 huggingface_hub
 pipecat-ai[runner,webrtc,daily,deepgram,openai,silero]
 python-dotenv
-qwen-tts
+qwen-tts==0.1.1
 accelerate

@@ -535,21 +535,16 @@ class MegakernelTTSEngine:
             except ValueError:
                 pass  # Already registered
 
-            # Load speech tokenizer from subfolder.
-            # transformers 5.x renamed dtype= to torch_dtype=; try both.
-            load_kwargs = dict(
+            # Load without dtype kwargs to avoid transformers 5.x internal
+            # device_map processing (torch_dtype= triggers KeyError('default')).
+            # Cast to bfloat16 manually after loading.
+            model = AutoModel.from_pretrained(
+                vocoder_path,
                 subfolder='speech_tokenizer',
                 low_cpu_mem_usage=False,
                 trust_remote_code=True,
             )
-            try:
-                model = AutoModel.from_pretrained(
-                    vocoder_path, torch_dtype=torch.bfloat16, **load_kwargs
-                )
-            except TypeError:
-                model = AutoModel.from_pretrained(
-                    vocoder_path, dtype=torch.bfloat16, **load_kwargs
-                )
+            model = model.to(dtype=torch.bfloat16)
             try:
                 model = model.to(target_device)
             except NotImplementedError as exc:
@@ -583,7 +578,7 @@ class MegakernelTTSEngine:
                 local_dir = snapshot_download(vocoder_path)
                 subfolder_path = os.path.join(local_dir, "speech_tokenizer")
 
-            tok = Qwen3TTSTokenizer.from_pretrained(subfolder_path, torch_dtype=torch.bfloat16)
+            tok = Qwen3TTSTokenizer.from_pretrained(subfolder_path)
             if hasattr(tok, 'model') and hasattr(tok.model, 'to'):
                 try:
                     tok.model = tok.model.to(target_device)

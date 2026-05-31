@@ -114,6 +114,13 @@ def setup_logging() -> Path:
     return log_path
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_tts_service():
     from qwen_megakernel.pipecat_tts import MegakernelTTSService
 
@@ -121,18 +128,38 @@ def create_tts_service():
     device = os.getenv("QWEN_TTS_DEVICE", "cuda")
     chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
     warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "full")
+    do_sample = _env_bool("QWEN_TTS_DO_SAMPLE", False)
+    temperature = float(os.getenv("QWEN_TTS_TEMPERATURE", "0.9"))
+    top_k = int(os.getenv("QWEN_TTS_TOP_K", "50"))
+    subtalker_do_sample = _env_bool("QWEN_TTS_SUBTALKER_DO_SAMPLE", do_sample)
+    subtalker_temperature = float(os.getenv("QWEN_TTS_SUBTALKER_TEMPERATURE", str(temperature)))
+    subtalker_top_k = int(os.getenv("QWEN_TTS_SUBTALKER_TOP_K", str(top_k)))
     logger.info(
-        "Initializing Megakernel TTS service model=%s device=%s chunk_frames=%s warmup_profile=%s",
+        "Initializing Megakernel TTS service model=%s device=%s chunk_frames=%s "
+        "warmup_profile=%s do_sample=%s subtalker_do_sample=%s temperature=%.2f "
+        "subtalker_temperature=%.2f top_k=%s subtalker_top_k=%s",
         model_path,
         device,
         chunk_frames,
         warmup_profile,
+        do_sample,
+        subtalker_do_sample,
+        temperature,
+        subtalker_temperature,
+        top_k,
+        subtalker_top_k,
     )
     return MegakernelTTSService(
         model_path=model_path,
         device=device,
         chunk_frames=chunk_frames,
         warmup_profile=warmup_profile,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_k=top_k,
+        subtalker_do_sample=subtalker_do_sample,
+        subtalker_temperature=subtalker_temperature,
+        subtalker_top_k=subtalker_top_k,
     )
 
 

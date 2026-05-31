@@ -818,9 +818,10 @@ class MegakernelTTSEngine:
                 wav = wav.detach().float().cpu().numpy()
             return np.asarray(wav, dtype=np.float32), sr
         raise RuntimeError(
-            "Qwen3-TTS vocoder is unavailable; refusing to emit silent audio. "
-            "Check the earlier 'Vocoder load failed' log line and verify qwen-tts "
-            "and transformers versions."
+            "Qwen3-TTS vocoder is unavailable (speech_tokenizer is None). "
+            "This means _load_vocoder() failed at startup — look for "
+            "'Vocoder load failed' in the engine init log above. "
+            "Common fix: pip install --upgrade qwen-tts transformers"
         )
 
     def get_metrics(self) -> dict:

@@ -82,7 +82,7 @@ async def run_bot(transport):
         LLMUserAggregatorParams,
     )
     from pipecat.services.deepgram.stt import DeepgramSTTService
-    from pipecat.services.openai import OpenAILLMService
+    from pipecat.services.openai.llm import OpenAILLMService
 
     require_env("DEEPGRAM_API_KEY", "OPENAI_API_KEY")
 

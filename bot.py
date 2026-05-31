@@ -231,12 +231,9 @@ async def run_bot(transport):
     )
 
     tts = create_tts_service()
-    logger.info("Starting Megakernel TTS warmup")
-    warmup_started = time.perf_counter()
-    await tts.warmup()
     logger.info(
-        "Megakernel TTS warmup complete duration_ms=%.1f",
-        (time.perf_counter() - warmup_started) * 1000,
+        "Skipping blocking Megakernel TTS warmup before transport start; "
+        "TTS will initialize lazily on first use"
     )
 
     logger.info("Creating LLM context aggregators")

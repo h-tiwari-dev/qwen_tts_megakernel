@@ -111,8 +111,7 @@ struct AtomicGridSync {
         atomicAdd(generation, 1);
       } else {
         volatile unsigned int *vgen = (volatile unsigned int *)generation;
-        while (*vgen <= my_gen) {
-        }
+        while (*vgen <= my_gen) { __nanosleep(64); }
       }
       local_gen = my_gen + 1;
     }
@@ -413,7 +412,15 @@ __device__ void ldg_attention(
   }
 
   // Non-attention blocks: prefetch while QK norm runs above (overlapped work)
+  // Gate on kv_flag so prefetch starts only after block 0 has written KV cache,
+  // preventing stale-cache reads and reducing unnecessary L2 pressure before KV
+  // is ready.  Mirrors the spin used by attention blocks 1-15 below.
   if (LDG_PREFETCH_QK && block_id >= ATTN_BLOCKS) {
+    if (kv_flag && threadIdx.x == 0) {
+      volatile unsigned int *vf = (volatile unsigned int *)kv_flag;
+      while (*vf < (unsigned int)(layer_idx + 1)) { __nanosleep(64); }
+    }
+    __syncthreads(); // all threads in block wait until thread 0 saw kv_flag
     int prefetch_block_id = block_id - ATTN_BLOCKS;
     int num_prefetch_blocks = num_blocks - ATTN_BLOCKS;
     int o_blocks = num_prefetch_blocks * 2 / 11;

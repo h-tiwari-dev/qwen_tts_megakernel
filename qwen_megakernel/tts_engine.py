@@ -505,6 +505,13 @@ class MegakernelTTSEngine:
 
         if first_token is None or hidden is None:
             return
+        if first_token == CODEC_EOS:
+            self._log(
+                "Talker prefill produced CODEC_EOS; falling back to legacy "
+                "CODEC_BOS decode step"
+            )
+            first_token, hidden = self.talker.step(CODEC_BOS)
+            self._sync()
         self._log(f"Talker prefill produced first token={first_token}")
 
         prev_token = first_token
@@ -659,10 +666,11 @@ class MegakernelTTSEngine:
             if isinstance(wav, torch.Tensor):
                 wav = wav.detach().float().cpu().numpy()
             return np.asarray(wav, dtype=np.float32), sr
-        else:
-            duration_sec = len(codec_frames) / 12.5
-            num_samples = int(duration_sec * self.sample_rate)
-            return np.zeros(num_samples, dtype=np.float32), self.sample_rate
+        raise RuntimeError(
+            "Qwen3-TTS vocoder is unavailable; refusing to emit silent audio. "
+            "Check the earlier 'Vocoder load failed' log line and verify qwen-tts "
+            "and transformers versions."
+        )
 
     def get_metrics(self) -> dict:
         """Return performance metrics from the last generation."""

@@ -7,13 +7,18 @@ Pipecat voice-agent pipeline.
 
 The end-to-end voice path is:
 
-```text
-Browser/Daily mic
-  -> Pipecat transport
-  -> Deepgram STT
-  -> OpenAI LLM
-  -> Megakernel-backed Qwen3-TTS service
-  -> Pipecat audio output
+```mermaid
+flowchart LR
+    MIC["🎤 Browser / Daily mic"]
+    STT["Deepgram STT"]
+    LLM["OpenAI LLM\ngpt-4o-mini"]
+    TTS["MegakernelTTSService\nQwen3-TTS"]
+    OUT["🔊 Audio output\nDaily / WebRTC"]
+
+    MIC -->|WebRTC audio| STT
+    STT -->|transcript| LLM
+    LLM -->|text stream| TTS
+    TTS -->|PCM chunks| OUT
 ```
 
 The original megakernel benchmark from this repo is still available:
@@ -111,6 +116,43 @@ The megakernel is used for the Qwen3-TTS talker decoder. I also route the
 bottleneck during integration. The official Qwen components are still used for
 text/tokenizer utilities, voice-clone prompt construction, and vocoder/audio
 decode.
+
+### TTS engine internals
+
+```mermaid
+flowchart TD
+    TEXT["Input text"]
+    TOK["Tokenizer\n+ TextProjection"]
+    PREFILL["prefill_parallel\n28-layer cuBLAS+SDPA\n110 steps, ~30ms"]
+    TALKER["Megakernel talker\nautoregressive decode\n~100 tok/s"]
+    CP["Code predictor\n5-layer megakernel\n15 codebook groups/frame"]
+    VOCODER["Qwen3TTSTokenizer\nvocoder"]
+    AUDIO["PCM audio\n24 kHz"]
+
+    TEXT --> TOK
+    TOK -->|embeddings| PREFILL
+    PREFILL -->|KV cache + first token| TALKER
+    TALKER -->|hidden state| CP
+    CP -->|16 codec codes/frame| VOCODER
+    TALKER -->|next step embed| TALKER
+    VOCODER --> AUDIO
+```
+
+### Voice-clone prefill structure
+
+```mermaid
+flowchart LR
+    subgraph FIXED ["Fixed at startup (cached)"]
+        ROLE["role tokens\n3 steps"]
+        SPK["speaker embedding\nx-vector, 1 step"]
+        TAGS["codec tags\n3 steps"]
+        REF["ref text + ref codec\nICL block, ~100 steps"]
+    end
+    subgraph PER_UTT ["Per utterance"]
+        TGT["target text\nembeddings"]
+    end
+    FIXED --> PER_UTT --> TALKER["Talker decoder\nKV cache primed"]
+```
 
 ## Current Voice Defaults
 
@@ -374,6 +416,19 @@ real-time).
 | OpenAI LLM TTFB (`gpt-4o-mini`) | 425–740 ms |
 | TTS TTFC | ~65 ms |
 | **Total measured** | **~890–1,200 ms** |
+
+```mermaid
+gantt
+    title Turn latency breakdown (ms, user stops speaking → first audio)
+    dateFormat X
+    axisFormat %s ms
+
+    section Pipeline
+    VAD silence wait     :0, 200
+    Deepgram STT TTFB    :200, 580
+    OpenAI LLM TTFB      :580, 1160
+    TTS prefill + TTFC   :1160, 1225
+```
 
 The TTS contributes only ~65 ms. The LLM API (425–740 ms) and STT (~380 ms)
 dominate. Switching to a local/low-latency inference host (Groq, Cerebras) would

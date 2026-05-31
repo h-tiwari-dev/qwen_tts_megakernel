@@ -4,6 +4,7 @@
 import asyncio
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -60,7 +61,7 @@ def setup_logging() -> Path:
         log_path = log_dir / f"daily-run-{timestamp}.log"
 
     console_level_name = os.getenv("QWEN_TTS_CONSOLE_LOG_LEVEL", "INFO").upper()
-    file_level_name = os.getenv("QWEN_TTS_FILE_LOG_LEVEL", "DEBUG").upper()
+    file_level_name = os.getenv("QWEN_TTS_FILE_LOG_LEVEL", "INFO").upper()
     console_level = getattr(logging, console_level_name, logging.INFO)
     file_level = getattr(logging, file_level_name, logging.DEBUG)
 
@@ -83,10 +84,31 @@ def setup_logging() -> Path:
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
+    try:
+        from loguru import logger as loguru_logger
+    except ImportError:
+        loguru_logger = None
+
+    if loguru_logger:
+        pipecat_console_level = os.getenv(
+            "QWEN_TTS_PIPECAT_CONSOLE_LOG_LEVEL", console_level_name
+        ).upper()
+        pipecat_file_level = os.getenv("QWEN_TTS_PIPECAT_FILE_LOG_LEVEL", file_level_name).upper()
+        loguru_format = (
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | "
+            "{name}:{function}:{line} - {message}"
+        )
+        loguru_logger.remove()
+        loguru_logger.add(sys.stderr, level=pipecat_console_level, format=loguru_format)
+        loguru_logger.add(log_path, level=pipecat_file_level, format=loguru_format)
+
     logger.info(
-        "Logging configured console_level=%s file_level=%s file=%s",
+        "Logging configured console_level=%s file_level=%s pipecat_console_level=%s "
+        "pipecat_file_level=%s file=%s",
         logging.getLevelName(console_level),
         logging.getLevelName(file_level),
+        os.getenv("QWEN_TTS_PIPECAT_CONSOLE_LOG_LEVEL", console_level_name).upper(),
+        os.getenv("QWEN_TTS_PIPECAT_FILE_LOG_LEVEL", file_level_name).upper(),
         log_path,
     )
     return log_path

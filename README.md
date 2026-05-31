@@ -101,8 +101,10 @@ python demo_pipeline.py --text "Hello from the streaming pipeline."
 The WebRTC bot logs startup and runtime metrics at `INFO`, including service
 initialization, TTS warmup time, client connect/disconnect, pipeline
 start/stop, first-audio latency, generated audio duration, wall-clock TTS
-duration, RTF, chunk count, and output bytes. Per-chunk TTS details are emitted
-at `DEBUG` if deeper streaming diagnostics are needed.
+duration, RTF, per-chunk wall gaps, per-chunk audio duration, chunk count, and
+output byte counts. File and console logs default to `INFO`; set
+`QWEN_TTS_FILE_LOG_LEVEL=DEBUG` or `QWEN_TTS_PIPECAT_FILE_LOG_LEVEL=DEBUG` only
+when byte/frame-level diagnostics are needed.
 
 Implementation notes and risks are tracked in
 [`QWEN3_TTS_PIPECAT_PLAN.md`](QWEN3_TTS_PIPECAT_PLAN.md). The current

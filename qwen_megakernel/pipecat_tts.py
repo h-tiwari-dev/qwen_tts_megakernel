@@ -141,14 +141,15 @@ class MegakernelTTSService(TTSService):
                 sample_rate = engine.sample_rate
 
                 # Run the streaming synthesis
+                previous_chunk_at = time.perf_counter()
                 async for audio_chunk, sr in engine.synthesize_streaming(
                     text, chunk_frames=self._config.chunk_frames
                 ):
                     # Convert float32 numpy array to PCM16 bytes
+                    chunk_ready_at = time.perf_counter()
                     pcm16 = _float32_to_pcm16(audio_chunk)
-                    now = time.perf_counter()
                     if first_chunk_at is None:
-                        first_chunk_at = now
+                        first_chunk_at = chunk_ready_at
                         logger.info(
                             "TTS first chunk context_id=%s ttfc_ms=%.1f sample_rate=%s",
                             context_id,
@@ -158,14 +159,21 @@ class MegakernelTTSService(TTSService):
                     chunk_count += 1
                     audio_bytes += len(pcm16)
                     sample_rate = sr
-                    logger.debug(
-                        "TTS chunk context_id=%s chunk=%s bytes=%s total_bytes=%s sample_rate=%s",
+                    chunk_audio_ms = len(audio_chunk) / sr * 1000 if sr else 0.0
+                    chunk_gap_ms = (chunk_ready_at - previous_chunk_at) * 1000
+                    logger.info(
+                        "TTS chunk metrics context_id=%s chunk=%s samples=%s audio_ms=%.1f "
+                        "wall_gap_ms=%.1f bytes=%s total_bytes=%s sample_rate=%s",
                         context_id,
                         chunk_count,
+                        len(audio_chunk),
+                        chunk_audio_ms,
+                        chunk_gap_ms,
                         len(pcm16),
                         audio_bytes,
                         sr,
                     )
+                    previous_chunk_at = chunk_ready_at
                     yield pcm16
 
             async for frame in self._stream_audio_frames_from_iterator(
@@ -184,10 +192,14 @@ class MegakernelTTSService(TTSService):
             audio_duration_s = audio_bytes / 2 / sample_rate if sample_rate else 0.0
             rtf = elapsed_s / audio_duration_s if audio_duration_s else 0.0
             logger.info(
-                "TTS utterance finished context_id=%s chunks=%s audio_ms=%.1f "
-                "duration_ms=%.1f rtf=%.3f bytes=%s",
+                "TTS metrics context_id=%s chars=%s chunks=%s ttfc_ms=%s "
+                "audio_ms=%.1f duration_ms=%.1f rtf=%.3f bytes=%s",
                 context_id,
+                text_chars,
                 chunk_count,
+                f"{(first_chunk_at - utterance_started) * 1000:.1f}"
+                if first_chunk_at
+                else "n/a",
                 audio_duration_s * 1000,
                 elapsed_s * 1000,
                 rtf,

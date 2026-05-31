@@ -136,6 +136,19 @@ Pipecat text-only demo:
 python demo_voice_agent.py --text-only
 ```
 
+The voice bot defaults favor natural TTS quality:
+
+```bash
+QWEN_TTS_DO_SAMPLE=true
+QWEN_TTS_TEMPERATURE=0.8
+QWEN_TTS_TOP_K=50
+QWEN_TTS_SUBTALKER_DO_SAMPLE=true
+QWEN_TTS_SUBTALKER_TEMPERATURE=0.8
+QWEN_TTS_SUBTALKER_TOP_K=50
+```
+
+For deterministic debugging, override both sampling flags to `false`.
+
 Full Pipecat voice agent:
 
 ```bash

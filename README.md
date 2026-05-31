@@ -84,10 +84,19 @@ OPENAI_MODEL=gpt-4.1-mini
 QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CHUNK_FRAMES=10
 QWEN_TTS_WARMUP_PROFILE=full
+QWEN_TTS_DO_SAMPLE=true
+QWEN_TTS_TEMPERATURE=0.8
+QWEN_TTS_TOP_K=50
+QWEN_TTS_SUBTALKER_DO_SAMPLE=true
+QWEN_TTS_SUBTALKER_TEMPERATURE=0.8
+QWEN_TTS_SUBTALKER_TOP_K=50
 ```
 
 Use `QWEN_TTS_WARMUP_PROFILE=fast` for quicker debugging startup, or `full`
-for the lower first-response latency expected in the voice demo.
+for the lower first-response latency expected in the voice demo. The default
+TTS sampling settings favor natural voice quality; set
+`QWEN_TTS_DO_SAMPLE=false QWEN_TTS_SUBTALKER_DO_SAMPLE=false` for deterministic
+debug runs.
 
 Before running the full browser demo, the lightweight checks are:
 

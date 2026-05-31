@@ -53,6 +53,7 @@ class MegakernelTTSService(TTSService):
         subtalker_do_sample: bool = True,
         subtalker_temperature: float = 0.9,
         subtalker_top_k: int = 50,
+        warmup_profile: str = "full",
         sample_rate: Optional[int] = None,
         **kwargs,
     ):
@@ -69,6 +70,7 @@ class MegakernelTTSService(TTSService):
             subtalker_do_sample=subtalker_do_sample,
             subtalker_temperature=subtalker_temperature,
             subtalker_top_k=subtalker_top_k,
+            warmup_profile=warmup_profile,
         )
         self._device = device
         self._engine: Optional[MegakernelTTSEngine] = None

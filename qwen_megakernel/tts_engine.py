@@ -52,6 +52,8 @@ class TTSConfig:
     subtalker_do_sample: bool = True
     subtalker_temperature: float = 0.9
     subtalker_top_k: int = 50
+    # Startup warmup profile: "full" for production latency, "fast" for debugging.
+    warmup_profile: str = "full"
 
 
 class MegakernelTTSEngine:
@@ -170,10 +172,16 @@ class MegakernelTTSEngine:
 
         # Warm up both deterministic and sampling paths. First calls are slow due
         # to CUDA JIT/cublas and PyTorch sampling kernel initialization.
-        warmup_modes = [False, True]
+        warmup_profile = self.config.warmup_profile.lower()
+        if warmup_profile == "off":
+            warmup_modes = []
+        elif warmup_profile == "fast":
+            warmup_modes = [False, True]
+        else:
+            warmup_modes = [False, False, True, True, True]
         self._log(
             "Warming up talker/code predictor "
-            f"({len(warmup_modes)} pass(es): argmax + sampling)"
+            f"(profile={warmup_profile}, {len(warmup_modes)} pass(es))"
         )
         for i, do_sample in enumerate(warmup_modes, start=1):
             label = "sampling" if do_sample else "argmax"
@@ -200,10 +208,15 @@ class MegakernelTTSEngine:
             )
         self.talker.reset()
         if self.speech_tokenizer is not None:
-            vocoder_warmup_frames = [1, 5]
+            if warmup_profile == "off":
+                vocoder_warmup_frames = []
+            elif warmup_profile == "fast":
+                vocoder_warmup_frames = [1, 5]
+            else:
+                vocoder_warmup_frames = [1, 1, 5]
             self._log(
                 "Warming up vocoder "
-                f"({len(vocoder_warmup_frames)} pass(es): "
+                f"(profile={warmup_profile}, {len(vocoder_warmup_frames)} pass(es): "
                 f"{vocoder_warmup_frames} codec frame batches)"
             )
             for i, n in enumerate(vocoder_warmup_frames, start=1):

@@ -83,7 +83,11 @@ The WebRTC runner loads `.env` and `.env.local`, requires
 OPENAI_MODEL=gpt-4.1-mini
 QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CHUNK_FRAMES=10
+QWEN_TTS_WARMUP_PROFILE=full
 ```
+
+Use `QWEN_TTS_WARMUP_PROFILE=fast` for quicker debugging startup, or `full`
+for the lower first-response latency expected in the voice demo.
 
 Before running the full browser demo, the lightweight checks are:
 

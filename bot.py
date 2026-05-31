@@ -49,16 +49,19 @@ def create_tts_service():
     model_path = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     device = os.getenv("QWEN_TTS_DEVICE", "cuda")
     chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
+    warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "full")
     logger.info(
-        "Initializing Megakernel TTS service model=%s device=%s chunk_frames=%s",
+        "Initializing Megakernel TTS service model=%s device=%s chunk_frames=%s warmup_profile=%s",
         model_path,
         device,
         chunk_frames,
+        warmup_profile,
     )
     return MegakernelTTSService(
         model_path=model_path,
         device=device,
         chunk_frames=chunk_frames,
+        warmup_profile=warmup_profile,
     )
 
 

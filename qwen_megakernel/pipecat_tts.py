@@ -194,28 +194,20 @@ class MegakernelTTSService(TTSService):
         return np.asarray(wavs[0], dtype=np.float32), sr
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
-        # Collect all PCM chunks under the lock (covers GPU synthesis), then
-        # yield the wrapped Pipecat frames outside so the lock is not held
-        # during downstream audio delivery (which can be slow / back-pressured).
-        pcm_chunks: list[bytes] = []
-        synthesized_sample_rate: int = self._engine.sample_rate if self._engine else 24000
+        # Stream frames as they're synthesized. The lock covers GPU compute;
+        # yielding frames to the transport happens inside the lock which is
+        # correct — only one utterance synthesizes at a time and frames must
+        # be delivered in order. Releasing the lock early (buffering first)
+        # would break chunked streaming by delaying all audio to end-of-synthesis.
         async with self._tts_lock:
-            async for pcm in self._synthesize_pcm(text, context_id):
-                pcm_chunks.append(pcm)
-                # Capture the final sample rate set during synthesis.
-                synthesized_sample_rate = self._engine.sample_rate if self._engine else 24000
-
-        async def _pcm_iter():
-            for chunk in pcm_chunks:
-                yield chunk
-
-        async for frame in self._stream_audio_frames_from_iterator(
-            _pcm_iter(),
-            in_sample_rate=synthesized_sample_rate,
-            context_id=context_id,
-        ):
-            await self.stop_ttfb_metrics()
-            yield frame
+            sample_rate = self._engine.sample_rate if self._engine else 24000
+            async for frame in self._stream_audio_frames_from_iterator(
+                self._synthesize_pcm(text, context_id),
+                in_sample_rate=sample_rate,
+                context_id=context_id,
+            ):
+                await self.stop_ttfb_metrics()
+                yield frame
 
     async def _synthesize_pcm(self, text: str, context_id: str) -> AsyncGenerator[bytes, None]:
         """Run GPU synthesis and yield raw PCM16 bytes.

@@ -171,11 +171,18 @@ async def bot(runner_args):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.runner.utils import create_transport
     from pipecat.transports.base_transport import TransportParams
+    from pipecat.transports.daily.transport import DailyParams
 
-    logger.info("Creating WebRTC transport")
+    logger.info("Creating runner transport for args=%s", type(runner_args).__name__)
     transport = await create_transport(
         runner_args,
         {
+            "daily": lambda: DailyParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                audio_out_sample_rate=24000,
+                vad_analyzer=SileroVADAnalyzer(),
+            ),
             "webrtc": lambda: TransportParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,

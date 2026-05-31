@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -41,6 +42,54 @@ def require_env(*names: str) -> None:
             f"Missing required environment variable(s): {joined}. "
             "Set them in the shell, .env, or .env.local."
         )
+
+
+def setup_logging() -> Path:
+    """Configure console and file logging for long-running voice sessions."""
+    repo_root = Path(__file__).resolve().parent
+    log_dir = Path(os.getenv("QWEN_TTS_LOG_DIR", repo_root / "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = os.getenv("QWEN_TTS_LOG_FILE")
+    if log_file:
+        log_path = Path(log_file)
+        if not log_path.is_absolute():
+            log_path = log_dir / log_path
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = log_dir / f"daily-run-{timestamp}.log"
+
+    console_level_name = os.getenv("QWEN_TTS_CONSOLE_LOG_LEVEL", "INFO").upper()
+    file_level_name = os.getenv("QWEN_TTS_FILE_LOG_LEVEL", "DEBUG").upper()
+    console_level = getattr(logging, console_level_name, logging.INFO)
+    file_level = getattr(logging, file_level_name, logging.DEBUG)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(min(console_level, file_level, logging.DEBUG))
+    root_logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(lineno)d - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setLevel(file_level)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    logger.info(
+        "Logging configured console_level=%s file_level=%s file=%s",
+        logging.getLevelName(console_level),
+        logging.getLevelName(file_level),
+        log_path,
+    )
+    return log_path
 
 
 def create_tts_service():
@@ -201,7 +250,7 @@ async def bot(runner_args):
 
 if __name__ == "__main__":
     load_env_files()
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
 
     from pipecat.runner.run import main
 

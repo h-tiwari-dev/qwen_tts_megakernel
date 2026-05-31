@@ -49,6 +49,46 @@ Pipecat text-only demo:
 python demo_voice_agent.py --text-only
 ```
 
+Pipecat WebRTC voice demo:
+
+```bash
+cp .env.example .env
+# Fill in DEEPGRAM_API_KEY and OPENAI_API_KEY.
+uv pip install -r requirements.txt
+python bot.py -t webrtc --host 0.0.0.0 --port 7860
+```
+
+Then open `http://localhost:7860/client` in a browser. The audio path is:
+
+```text
+Browser mic -> Pipecat WebRTC -> Deepgram STT -> OpenAI gpt-4.1-mini
+  -> Megakernel TTS -> browser audio output
+```
+
+The WebRTC runner loads `.env` and `.env.local`, requires
+`DEEPGRAM_API_KEY` and `OPENAI_API_KEY`, and defaults to:
+
+```bash
+OPENAI_MODEL=gpt-4.1-mini
+QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
+QWEN_TTS_CHUNK_FRAMES=10
+```
+
+Before running the full browser demo, the lightweight checks are:
+
+```bash
+python3 -m py_compile bot.py qwen_megakernel/pipecat_tts.py qwen_megakernel/tts_engine.py
+python3 -c "import qwen_megakernel; print('ok')"
+python demo_tts.py "Hello, this is a test." --output /tmp/tts.wav
+python demo_pipeline.py --text "Hello from the streaming pipeline."
+```
+
+The WebRTC bot logs startup and runtime metrics at `INFO`, including service
+initialization, TTS warmup time, client connect/disconnect, pipeline
+start/stop, first-audio latency, generated audio duration, wall-clock TTS
+duration, RTF, chunk count, and output bytes. Per-chunk TTS details are emitted
+at `DEBUG` if deeper streaming diagnostics are needed.
+
 Implementation notes and risks are tracked in
 [`QWEN3_TTS_PIPECAT_PLAN.md`](QWEN3_TTS_PIPECAT_PLAN.md). The current
 implementation status and runbook are in

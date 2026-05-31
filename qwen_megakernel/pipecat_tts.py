@@ -11,6 +11,7 @@ Usage in a Pipecat pipeline:
 
 import asyncio
 import logging
+import time
 from typing import AsyncGenerator, AsyncIterator, Optional
 
 import numpy as np
@@ -78,8 +79,25 @@ class MegakernelTTSService(TTSService):
     def _ensure_engine(self):
         """Lazily initialize the TTS engine."""
         if self._engine is None:
+            init_started = time.perf_counter()
+            logger.info(
+                "Initializing Megakernel TTS engine model=%s device=%s chunk_frames=%s",
+                self._config.model_path,
+                self._device,
+                self._config.chunk_frames,
+            )
             self._engine = MegakernelTTSEngine(config=self._config, device=self._device)
             self._engine.initialize()
+            logger.info(
+                "Megakernel TTS engine initialized duration_ms=%.1f sample_rate=%s",
+                (time.perf_counter() - init_started) * 1000,
+                self._engine.sample_rate,
+            )
+
+    async def warmup(self):
+        """Initialize and warm the underlying TTS engine before first speech."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._ensure_engine)
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Generate streaming speech from text using the megakernel.
@@ -88,19 +106,32 @@ class MegakernelTTSService(TTSService):
         pushing audio to the pipeline chunk by chunk.
         """
         logger.debug(f"{self}: Generating TTS [{text}]")
+        utterance_started = time.perf_counter()
+        first_chunk_at: Optional[float] = None
+        chunk_count = 0
+        audio_bytes = 0
+        sample_rate = self._engine.sample_rate if self._engine else 24000
+        text_chars = len(text)
 
         try:
+            logger.info(
+                "TTS utterance started context_id=%s chars=%s",
+                context_id,
+                text_chars,
+            )
             await self.start_ttfb_metrics()
             await self.start_tts_usage_metrics(text)
 
             # Run streaming synthesis in a thread (megakernel is synchronous/GPU-bound)
             async def audio_chunk_iterator() -> AsyncIterator[bytes]:
                 """Generate audio chunks as PCM16 bytes via streaming synthesis."""
-                loop = asyncio.get_event_loop()
+                nonlocal audio_bytes, chunk_count, first_chunk_at, sample_rate
+                loop = asyncio.get_running_loop()
 
                 # Ensure engine is initialized
                 await loop.run_in_executor(None, self._ensure_engine)
                 engine = self._engine
+                sample_rate = engine.sample_rate
 
                 # Run the streaming synthesis
                 async for audio_chunk, sr in engine.synthesize_streaming(
@@ -108,6 +139,26 @@ class MegakernelTTSService(TTSService):
                 ):
                     # Convert float32 numpy array to PCM16 bytes
                     pcm16 = _float32_to_pcm16(audio_chunk)
+                    now = time.perf_counter()
+                    if first_chunk_at is None:
+                        first_chunk_at = now
+                        logger.info(
+                            "TTS first chunk context_id=%s ttfc_ms=%.1f sample_rate=%s",
+                            context_id,
+                            (first_chunk_at - utterance_started) * 1000,
+                            sr,
+                        )
+                    chunk_count += 1
+                    audio_bytes += len(pcm16)
+                    sample_rate = sr
+                    logger.debug(
+                        "TTS chunk context_id=%s chunk=%s bytes=%s total_bytes=%s sample_rate=%s",
+                        context_id,
+                        chunk_count,
+                        len(pcm16),
+                        audio_bytes,
+                        sr,
+                    )
                     yield pcm16
 
             async for frame in self._stream_audio_frames_from_iterator(
@@ -122,6 +173,19 @@ class MegakernelTTSService(TTSService):
             logger.error(f"{self} TTS exception: {e}")
             yield ErrorFrame(error=f"Megakernel TTS error: {e}")
         finally:
+            elapsed_s = time.perf_counter() - utterance_started
+            audio_duration_s = audio_bytes / 2 / sample_rate if sample_rate else 0.0
+            rtf = elapsed_s / audio_duration_s if audio_duration_s else 0.0
+            logger.info(
+                "TTS utterance finished context_id=%s chunks=%s audio_ms=%.1f "
+                "duration_ms=%.1f rtf=%.3f bytes=%s",
+                context_id,
+                chunk_count,
+                audio_duration_s * 1000,
+                elapsed_s * 1000,
+                rtf,
+                audio_bytes,
+            )
             logger.debug(f"{self}: Finished TTS [{text}]")
             await self.stop_ttfb_metrics()
 

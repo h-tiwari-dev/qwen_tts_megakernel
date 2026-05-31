@@ -6,6 +6,7 @@ ninja
 numpy
 soundfile
 huggingface_hub
-pipecat-ai
+pipecat-ai[runner,webrtc,deepgram,openai,silero]
+python-dotenv
 qwen-tts
 accelerate

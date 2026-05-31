@@ -327,8 +327,7 @@ async def run_bot(transport):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info("Client disconnected client=%s; cancelling pipeline task", _client_label(client))
-        await task.cancel()
+        logger.info("Client disconnected client=%s; keeping pipeline alive for the next join", _client_label(client))
 
     runner = PipelineRunner()
     logger.info("Starting Pipecat pipeline runner")

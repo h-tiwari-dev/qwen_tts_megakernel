@@ -466,9 +466,32 @@ class MegakernelTTSEngine:
         del model
         torch.cuda.empty_cache()
 
+    @staticmethod
+    def _patch_check_model_inputs():
+        """Patch transformers.check_model_inputs for qwen-tts 0.1.x compatibility.
+
+        qwen-tts 0.1.x uses @check_model_inputs() as a decorator factory.
+        transformers 5.x changed the signature so func is a positional arg.
+        This shim accepts both call patterns.
+        """
+        try:
+            import transformers.utils.generic as _tug
+            def _compat(*args, **kwargs):
+                def _wrap(f): return f
+                if len(args) == 1 and callable(args[0]) and not kwargs:
+                    return args[0]
+                return _wrap
+            _tug.check_model_inputs = _compat
+            import transformers as _t
+            if hasattr(_t, 'check_model_inputs'):
+                _t.check_model_inputs = _compat
+        except Exception:
+            pass
+
     def _load_vocoder(self, vocoder_path: str):
         """Load the speech tokenizer for codec → waveform decoding."""
         target_device = _normalize_torch_device(self.device)
+        self._patch_check_model_inputs()
         try:
             from qwen_tts import Qwen3TTSTokenizer
 
@@ -487,14 +510,7 @@ class MegakernelTTSEngine:
         # Fallback: load the speech tokenizer model directly from the
         # speech_tokenizer/ subfolder, bypassing AutoFeatureExtractor.
         try:
-            # Monkey-patch transformers if needed (qwen_tts compat with transformers 5.x)
-            import transformers.utils.generic
-            if not hasattr(transformers.utils.generic, 'check_model_inputs'):
-                def _check_model_inputs(*args, **kwargs):
-                    def decorator(func):
-                        return func
-                    return decorator
-                transformers.utils.generic.check_model_inputs = _check_model_inputs
+            # _patch_check_model_inputs() already applied above
 
             AutoConfig = _import_transformers_auto("AutoConfig")
             AutoModel = _import_transformers_auto("AutoModel")

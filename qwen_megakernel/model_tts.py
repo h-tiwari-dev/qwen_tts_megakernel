@@ -329,6 +329,144 @@ class TTSDecoder:
         self._position += 1
         return self._out_token.item(), self._norm_out.clone()
 
+    def prefill_parallel(self, embeds: torch.Tensor) -> tuple[int, torch.Tensor]:
+        """Single-shot parallel prefill for N precomputed embeddings.
+
+        Runs the full 28-layer talker forward over all N positions in parallel
+        using cuBLAS GEMMs and PyTorch's fused SDPA (flash-attention) — instead
+        of N sequential megakernel decode launches. The resulting K/V are
+        written into the megakernel's KV cache at positions ``[pos:pos+N]`` so
+        subsequent calls to ``step`` / ``step_with_embed`` see the prefilled
+        context as if it had been fed one step at a time.
+
+        Args:
+            embeds: bf16 tensor of shape ``[N, HIDDEN_SIZE]`` on CUDA. Each row
+                is the input embedding for one prefill position starting from
+                ``self._position``. ``N`` must be ≥ 1.
+
+        Returns:
+            ``(last_token_id, last_hidden_state_f32)`` — argmax of the LM head
+            for row ``N-1`` and the post-final-RMSNorm hidden state for row
+            ``N-1``, matching what ``step_with_embed`` returns for the final
+            embedding in the sequential path.
+        """
+        import torch.nn.functional as F
+
+        n = embeds.shape[0]
+        if n == 0:
+            raise ValueError("prefill_parallel requires at least one embedding")
+        if embeds.dim() != 2 or embeds.shape[1] != HIDDEN_SIZE:
+            raise ValueError(
+                f"embeds must be [N, {HIDDEN_SIZE}] bf16; got shape {tuple(embeds.shape)}"
+            )
+
+        start_pos = self._position
+        if start_pos + n > MAX_SEQ_LEN:
+            raise ValueError(
+                f"prefill would exceed MAX_SEQ_LEN: start_pos={start_pos}, "
+                f"n={n}, max={MAX_SEQ_LEN}"
+            )
+
+        layer_weights = self._weights["layer_weights"]
+        eps = 1e-6
+        repeat_factor = NUM_Q_HEADS // NUM_KV_HEADS
+
+        hidden = embeds.to(torch.bfloat16).contiguous()
+        positions = torch.arange(start_pos, start_pos + n, device=hidden.device)
+        cos = self._cos_table[positions]   # [N, HEAD_DIM]
+        sin = self._sin_table[positions]
+        half = HEAD_DIM // 2
+
+        def _rmsnorm(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+            xf = x.to(torch.float32)
+            xf = xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + eps)
+            return (xf * w.to(torch.float32)).to(torch.bfloat16)
+
+        def _rotary(t: torch.Tensor) -> torch.Tensor:
+            # t: [N, H, D]; cos/sin: [N, D] — broadcast over heads
+            t1, t2 = t[..., :half], t[..., half:]
+            rotated = torch.cat([-t2, t1], dim=-1)
+            return t * cos.unsqueeze(1) + rotated * sin.unsqueeze(1)
+
+        for layer in range(NUM_LAYERS):
+            base = layer * 11
+            w_in_norm = layer_weights[base + 0]
+            w_q       = layer_weights[base + 1]
+            w_k       = layer_weights[base + 2]
+            w_v       = layer_weights[base + 3]
+            w_q_norm  = layer_weights[base + 4]
+            w_k_norm  = layer_weights[base + 5]
+            w_o       = layer_weights[base + 6]
+            w_post    = layer_weights[base + 7]
+            w_gate    = layer_weights[base + 8]
+            w_up      = layer_weights[base + 9]
+            w_down    = layer_weights[base + 10]
+
+            # Attention block
+            residual = hidden
+            x = _rmsnorm(hidden, w_in_norm)
+
+            q = F.linear(x, w_q).view(n, NUM_Q_HEADS, HEAD_DIM)
+            k = F.linear(x, w_k).view(n, NUM_KV_HEADS, HEAD_DIM)
+            v = F.linear(x, w_v).view(n, NUM_KV_HEADS, HEAD_DIM)
+
+            q = _rmsnorm(q, w_q_norm)
+            k = _rmsnorm(k, w_k_norm)
+            q = _rotary(q)
+            k = _rotary(k)
+
+            # Write K/V into the megakernel KV cache so later decode steps
+            # can attend to this prefill context. cache: [L, Hkv, T, D]
+            self._k_cache[layer, :, start_pos:start_pos + n, :] = k.permute(1, 0, 2)
+            self._v_cache[layer, :, start_pos:start_pos + n, :] = v.permute(1, 0, 2)
+
+            # SDPA over the full prefix [0, start_pos+n) of K/V cache, with
+            # causal masking. For start_pos == 0 this is plain causal SDPA.
+            tkv = start_pos + n
+            q_sdpa = q.transpose(0, 1).unsqueeze(0)                            # [1, Hq, N, D]
+            k_sdpa = self._k_cache[layer, :, :tkv, :].unsqueeze(0)             # [1, Hkv, tkv, D]
+            v_sdpa = self._v_cache[layer, :, :tkv, :].unsqueeze(0)
+            # GQA: repeat K/V to match Q head count for cross-version SDPA support
+            k_sdpa = k_sdpa.repeat_interleave(repeat_factor, dim=1)
+            v_sdpa = v_sdpa.repeat_interleave(repeat_factor, dim=1)
+
+            if start_pos == 0:
+                attn = F.scaled_dot_product_attention(
+                    q_sdpa, k_sdpa, v_sdpa, is_causal=True,
+                )
+            else:
+                # Build a [N, tkv] mask: query i (abs pos start_pos+i) attends
+                # to keys at absolute positions <= start_pos+i (i.e. cols
+                # 0..start_pos+i inclusive). True = keep, False = mask.
+                key_idx = torch.arange(tkv, device=hidden.device)
+                q_idx = positions.unsqueeze(1)
+                mask = key_idx.unsqueeze(0) <= q_idx                            # [N, tkv]
+                attn = F.scaled_dot_product_attention(
+                    q_sdpa, k_sdpa, v_sdpa, attn_mask=mask.unsqueeze(0).unsqueeze(0),
+                )
+
+            attn = attn.squeeze(0).transpose(0, 1).reshape(n, Q_SIZE)          # [N, Q_SIZE]
+            hidden = residual + F.linear(attn, w_o)
+
+            # MLP block
+            residual = hidden
+            x = _rmsnorm(hidden, w_post)
+            gate = F.silu(F.linear(x, w_gate))
+            up = F.linear(x, w_up)
+            hidden = residual + F.linear(gate * up, w_down)
+
+        # Final RMSNorm + LM head on row N-1 only
+        last = hidden[-1:]                                                     # [1, H]
+        xf = last.to(torch.float32)
+        xf = xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + eps)
+        norm_out = (xf * self._final_norm_weight.to(torch.float32)).squeeze(0) # [H] f32
+
+        logits = F.linear(norm_out.to(torch.bfloat16), self._lm_head_weight)
+        next_token = int(logits.argmax(dim=-1).item())
+
+        self._position = start_pos + n
+        return next_token, norm_out.clone()
+
     def prefill_with_embeds(self, embeds: torch.Tensor) -> tuple[int, torch.Tensor]:
         """Queue N decode steps over precomputed embeddings with no per-step CPU sync.
 

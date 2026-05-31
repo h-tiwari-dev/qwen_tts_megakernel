@@ -602,11 +602,18 @@ class MegakernelTTSEngine:
             ], dim=0)
 
         # Phase 1: Prefill — feed all prefill embeddings through the talker.
-        # Uses a no-sync batched helper so the N kernel launches are queued
-        # back-to-back on the CUDA stream and we pay only one GPU→CPU sync.
-        self._log(f"Running talker prefill ({prefill_embeds.shape[0]} step(s))...")
+        # Parallel path runs the full 28-layer forward over N positions in one
+        # pass via cuBLAS GEMMs + flash-attention; sequential path queues N
+        # megakernel decode launches with a single end-of-loop sync. Toggle
+        # with QWEN_TTS_PARALLEL_PREFILL=0 if numerical drift is suspected.
+        use_parallel = _env_bool("QWEN_TTS_PARALLEL_PREFILL", True)
+        mode = "parallel" if use_parallel else "sequential"
+        self._log(f"Running talker prefill ({prefill_embeds.shape[0]} step(s), {mode})...")
         t0 = time.perf_counter()
-        first_token, hidden = self.talker.prefill_with_embeds(prefill_embeds)
+        if use_parallel:
+            first_token, hidden = self.talker.prefill_parallel(prefill_embeds)
+        else:
+            first_token, hidden = self.talker.prefill_with_embeds(prefill_embeds)
         self._log(f"Talker prefill done in {time.perf_counter() - t0:.2f}s")
 
         # Phase 2: Autoregressive decode

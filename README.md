@@ -84,19 +84,38 @@ OPENAI_MODEL=gpt-4.1-mini
 QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CHUNK_FRAMES=10
 QWEN_TTS_WARMUP_PROFILE=full
-QWEN_TTS_DO_SAMPLE=true
-QWEN_TTS_TEMPERATURE=0.8
+QWEN_TTS_STREAMING_MODE=full_decode
+QWEN_TTS_BACKEND=megakernel
+QWEN_TTS_REF_AUDIO=
+QWEN_TTS_REF_TEXT=
+QWEN_TTS_X_VECTOR_ONLY=false
+QWEN_TTS_DO_SAMPLE=false
+QWEN_TTS_TEMPERATURE=0.9
 QWEN_TTS_TOP_K=50
-QWEN_TTS_SUBTALKER_DO_SAMPLE=true
-QWEN_TTS_SUBTALKER_TEMPERATURE=0.8
+QWEN_TTS_SUBTALKER_DO_SAMPLE=false
+QWEN_TTS_SUBTALKER_TEMPERATURE=0.9
 QWEN_TTS_SUBTALKER_TOP_K=50
 ```
 
 Use `QWEN_TTS_WARMUP_PROFILE=fast` for quicker debugging startup, or `full`
 for the lower first-response latency expected in the voice demo. The default
-TTS sampling settings favor natural voice quality; set
-`QWEN_TTS_DO_SAMPLE=false QWEN_TTS_SUBTALKER_DO_SAMPLE=false` for deterministic
-debug runs.
+TTS settings favor voice stability while the megakernel prompt path is being
+validated: deterministic sampling and full-utterance vocoder decode. Set
+`QWEN_TTS_STREAMING_MODE=chunked` for the low-latency streaming path after
+audio quality is confirmed.
+
+For Base-model voice cloning on the megakernel path, provide a reference clip
+and its transcript:
+
+```bash
+export QWEN_TTS_REF_AUDIO=/path/to/reference.wav
+export QWEN_TTS_REF_TEXT="Exact transcript of the reference audio."
+```
+
+This builds the official Qwen3-TTS voice-clone prompt once during warmup,
+injects the speaker embedding into the megakernel talker prefill, and uses ICL
+reference text/code conditioning. If you only want the x-vector speaker
+embedding and no reference-code ICL, set `QWEN_TTS_X_VECTOR_ONLY=true`.
 
 Before running the full browser demo, the lightweight checks are:
 

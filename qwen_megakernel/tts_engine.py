@@ -96,6 +96,11 @@ class TTSConfig:
     subtalker_top_k: int = 50
     # Startup warmup profile: "full" for production latency, "fast" for debugging.
     warmup_profile: str = "full"
+    # Optional Base-model voice clone prompt. When set, the megakernel path
+    # uses the official qwen-tts prompt builder once, then reuses its tensors.
+    ref_audio: Optional[str] = None
+    ref_text: Optional[str] = None
+    x_vector_only_mode: bool = False
 
 
 class MegakernelTTSEngine:
@@ -115,6 +120,7 @@ class MegakernelTTSEngine:
         self.device = device
         self._initialized = False
         self._init_t0 = None
+        self._voice_clone_prompt = None
 
     def _log(self, message: str):
         """Print an engine progress message with elapsed init time when available."""
@@ -173,6 +179,9 @@ class MegakernelTTSEngine:
 
         # Load speech tokenizer (vocoder)
         self._timed(f"Loading vocoder from {cfg.vocoder_path}", lambda: self._load_vocoder(cfg.vocoder_path))
+
+        if cfg.ref_audio:
+            self._timed("Building Qwen3-TTS voice clone prompt", self._load_voice_clone_prompt)
 
         # Precompute constant embeddings (TTS special tokens + role tokens + codec tags)
         self._log("Precomputing constant embeddings...")
@@ -284,6 +293,53 @@ class MegakernelTTSEngine:
 
         self._initialized = True
         self._log("MegakernelTTSEngine initialized")
+
+    def _load_voice_clone_prompt(self):
+        """Build and cache official Qwen3-TTS Base voice-clone prompt tensors."""
+        cfg = self.config
+        if not cfg.ref_audio:
+            self._voice_clone_prompt = None
+            return
+        if not cfg.x_vector_only_mode and not cfg.ref_text:
+            raise ValueError(
+                "QWEN_TTS_REF_TEXT is required for megakernel voice-clone ICL mode. "
+                "Set QWEN_TTS_X_VECTOR_ONLY=true to use only the speaker embedding."
+            )
+
+        import torch
+        from qwen_tts import Qwen3TTSModel
+
+        device_map = self.device
+        if device_map == "cuda":
+            device_map = "cuda:0"
+
+        model = Qwen3TTSModel.from_pretrained(
+            cfg.model_path,
+            device_map=device_map,
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+        )
+        prompt_items = model.create_voice_clone_prompt(
+            ref_audio=cfg.ref_audio,
+            ref_text=cfg.ref_text,
+            x_vector_only_mode=cfg.x_vector_only_mode,
+        )
+        if not prompt_items:
+            raise ValueError("Qwen3-TTS voice clone prompt builder returned no prompt items")
+
+        item = prompt_items[0]
+        ref_code = None if item.ref_code is None else item.ref_code.to(self.device).long()
+        ref_spk_embedding = item.ref_spk_embedding.to(self.device).to(torch.bfloat16)
+        self._voice_clone_prompt = {
+            "ref_code": ref_code,
+            "ref_spk_embedding": ref_spk_embedding,
+            "x_vector_only_mode": bool(item.x_vector_only_mode),
+            "icl_mode": bool(item.icl_mode),
+            "ref_text": item.ref_text,
+        }
+
+        del model
+        torch.cuda.empty_cache()
 
     def _load_vocoder(self, vocoder_path: str):
         """Load the speech tokenizer for codec → waveform decoding."""
@@ -410,25 +466,36 @@ class MegakernelTTSEngine:
         self._log(f"Projected text embeddings in {time.perf_counter() - t0:.2f}s")
         first_text_with_bos = content_embeds[:1] + self._cached_codec_bos
 
-        # Build prefill: [role(3), fused_tags(4), first_text+bos(1)] = 8 steps
-        prefill_embeds = torch.cat([
-            self._cached_role_embeds,
-            self._cached_fused_tags,
-            first_text_with_bos,
-        ], dim=0)  # [8, 1024]
+        voice_prompt = self._voice_clone_prompt
+        if voice_prompt is not None:
+            prefill_embeds, trailing_text = self._build_voice_clone_prefill(
+                text_ids=text_ids,
+                content_embeds=content_embeds,
+                first_text_with_bos=first_text_with_bos,
+                voice_prompt=voice_prompt,
+            )
+        else:
+            # Build prefill: [role(3), fused_tags(4), first_text+bos(1)] = 8 steps
+            prefill_embeds = torch.cat([
+                self._cached_role_embeds,
+                self._cached_fused_tags,
+                first_text_with_bos,
+            ], dim=0)  # [8, 1024]
 
-        # Trailing text: content tokens[1:-5] + tts_eos
-        # Strip last 5 format tokens: <|im_end|>\n<|im_start|>assistant\n
-        trailing_text = torch.cat([
-            content_embeds[1:-5],
-            self._cached_tts_embeds["eos"],
-        ], dim=0)
+            # Trailing text: content tokens[1:-5] + tts_eos
+            # Strip last 5 format tokens: <|im_end|>\n<|im_start|>assistant\n
+            trailing_text = torch.cat([
+                content_embeds[1:-5],
+                self._cached_tts_embeds["eos"],
+            ], dim=0)
 
         # Phase 1: Prefill — feed all prefill embeddings through the talker
         self._log(f"Running talker prefill ({prefill_embeds.shape[0]} step(s))...")
         t0 = time.perf_counter()
+        first_token = None
+        hidden = None
         for i in range(prefill_embeds.shape[0]):
-            self.talker.step_with_embed(prefill_embeds[i])
+            first_token, hidden = self.talker.step_with_embed(prefill_embeds[i])
         self._sync()
         self._log(f"Talker prefill done in {time.perf_counter() - t0:.2f}s")
 
@@ -436,12 +503,9 @@ class MegakernelTTSEngine:
         trailing_idx = 0
         tts_pad_embed = self._tts_pad_embed
 
-        # First decode step
-        self._log("Running first talker decode step...")
-        t0 = time.perf_counter()
-        first_token, hidden = self.talker.step(CODEC_BOS)
-        self._sync()
-        self._log(f"First talker decode produced token={first_token} in {time.perf_counter() - t0:.2f}s")
+        if first_token is None or hidden is None:
+            return
+        self._log(f"Talker prefill produced first token={first_token}")
 
         prev_token = first_token
 
@@ -497,6 +561,90 @@ class MegakernelTTSEngine:
 
             prev_token, hidden = self.talker.step_with_embed(embed_sum)
         self._log(f"Codec frame generation finished in {time.perf_counter() - t_gen_start:.2f}s")
+
+    def _build_voice_clone_prefill(
+        self,
+        *,
+        text_ids: torch.Tensor,
+        content_embeds: torch.Tensor,
+        first_text_with_bos: torch.Tensor,
+        voice_prompt: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build the official Base-model speaker/ICL prefill for megakernel decode."""
+        speaker_embed = voice_prompt["ref_spk_embedding"].view(1, -1)
+        if speaker_embed.shape[-1] != HIDDEN_SIZE:
+            raise ValueError(
+                f"Unexpected speaker embedding size {speaker_embed.shape[-1]}; "
+                f"expected {HIDDEN_SIZE}"
+            )
+
+        codec_ids = torch.tensor([
+            CODEC_NOTHINK,
+            CODEC_THINK_BOS,
+            CODEC_THINK_EOS,
+            CODEC_PAD,
+            CODEC_BOS,
+        ], device=self.device)
+        codec_embeds = torch.nn.functional.embedding(codec_ids, self._talker_embed)
+        codec_input_embedding = torch.cat([
+            codec_embeds[0:3],
+            speaker_embed.to(torch.bfloat16),
+            codec_embeds[3:5],
+        ], dim=0)
+
+        # Official prompt: tts_pad for tag/speaker tokens, then tts_bos for
+        # codec_pad. The final codec_bos is fused with target/ICL text below.
+        text_side = torch.cat([
+            self._cached_tts_embeds["pad"].expand(codec_input_embedding.shape[0] - 2, -1),
+            self._cached_tts_embeds["bos"],
+        ], dim=0)
+        prompt_prefix = text_side + codec_input_embedding[:-1]
+        prefill_prefix = torch.cat([self._cached_role_embeds, prompt_prefix], dim=0)
+
+        ref_code = voice_prompt.get("ref_code")
+        if ref_code is not None and voice_prompt.get("icl_mode"):
+            ref_text = voice_prompt.get("ref_text")
+            ref_formatted = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
+            ref_ids = self.tokenizer.encode(ref_formatted, return_tensors="pt")[0].to(self.device)
+
+            target_text_ids = text_ids[3:-5].to(self.device)
+            ref_text_ids = ref_ids[3:-2].to(self.device)
+            icl_text_ids = torch.cat([ref_text_ids, target_text_ids], dim=0)
+            icl_text_embed = self.text_projection.embed_text_ids(icl_text_ids)
+            icl_text_embed = torch.cat([icl_text_embed, self._cached_tts_embeds["eos"]], dim=0)
+
+            ref_code = ref_code.to(self.device).long()
+            ref_codec_embed = self._codec_frame_embeds(ref_code)
+            codec_bos = codec_embeds[4:5]
+            codec_embed = torch.cat([codec_bos, ref_codec_embed], dim=0)
+
+            if icl_text_embed.shape[0] > codec_embed.shape[0]:
+                icl_input_embed = icl_text_embed[:codec_embed.shape[0]] + codec_embed
+                trailing_text = icl_text_embed[codec_embed.shape[0]:]
+            else:
+                pad_count = codec_embed.shape[0] - icl_text_embed.shape[0]
+                if pad_count:
+                    icl_text_embed = torch.cat([
+                        icl_text_embed,
+                        self._cached_tts_embeds["pad"].expand(pad_count, -1),
+                    ], dim=0)
+                icl_input_embed = icl_text_embed + codec_embed
+                trailing_text = self._cached_tts_embeds["pad"]
+
+            return torch.cat([prefill_prefix, icl_input_embed], dim=0), trailing_text
+
+        trailing_text = torch.cat([
+            content_embeds[1:-5],
+            self._cached_tts_embeds["eos"],
+        ], dim=0)
+        return torch.cat([prefill_prefix, first_text_with_bos], dim=0), trailing_text
+
+    def _codec_frame_embeds(self, codes: torch.Tensor) -> torch.Tensor:
+        """Sum group embeddings for a sequence of full codec frames."""
+        embeds = torch.nn.functional.embedding(codes[:, 0], self._talker_embed)
+        for g in range(NUM_CODE_GROUPS - 1):
+            embeds = embeds + torch.nn.functional.embedding(codes[:, g + 1], self._cp_embeds[g])
+        return embeds
 
     def _decode_to_audio(self, codec_frames: list[torch.Tensor]) -> tuple[np.ndarray, int]:
         """Decode codec frames to audio waveform."""

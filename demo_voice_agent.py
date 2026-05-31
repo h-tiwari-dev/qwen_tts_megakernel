@@ -50,10 +50,8 @@ def create_tts_service():
     streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
     ref_audio = os.getenv("QWEN_TTS_REF_AUDIO")
     ref_text = os.getenv("QWEN_TTS_REF_TEXT")
-    backend = os.getenv(
-        "QWEN_TTS_BACKEND",
-        "official_voice_clone" if ref_audio and ref_text else "megakernel",
-    )
+    x_vector_only_mode = _env_bool("QWEN_TTS_X_VECTOR_ONLY", False)
+    backend = os.getenv("QWEN_TTS_BACKEND", "megakernel")
     language = os.getenv("QWEN_TTS_LANGUAGE", "English")
     do_sample = _env_bool("QWEN_TTS_DO_SAMPLE", False)
     temperature = float(os.getenv("QWEN_TTS_TEMPERATURE", "0.9"))
@@ -69,6 +67,7 @@ def create_tts_service():
         backend=backend,
         ref_audio=ref_audio,
         ref_text=ref_text,
+        x_vector_only_mode=x_vector_only_mode,
         language=language,
         do_sample=do_sample,
         temperature=temperature,

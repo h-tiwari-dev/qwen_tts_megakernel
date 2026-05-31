@@ -59,6 +59,7 @@ class MegakernelTTSService(TTSService):
         backend: str = "megakernel",
         ref_audio: Optional[str] = None,
         ref_text: Optional[str] = None,
+        x_vector_only_mode: bool = False,
         language: str = "English",
         sample_rate: Optional[int] = None,
         **kwargs,
@@ -81,12 +82,16 @@ class MegakernelTTSService(TTSService):
             subtalker_temperature=subtalker_temperature,
             subtalker_top_k=subtalker_top_k,
             warmup_profile=warmup_profile,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            x_vector_only_mode=x_vector_only_mode,
         )
         self._device = device
         self._streaming_mode = streaming_mode
         self._backend = backend
         self._ref_audio = ref_audio
         self._ref_text = ref_text
+        self._x_vector_only_mode = x_vector_only_mode
         self._language = language
         self._engine: Optional[MegakernelTTSEngine] = None
         self._official_model = None
@@ -161,6 +166,7 @@ class MegakernelTTSService(TTSService):
             language=self._language,
             ref_audio=self._ref_audio,
             ref_text=self._ref_text,
+            x_vector_only_mode=self._x_vector_only_mode,
         )
         return np.asarray(wavs[0], dtype=np.float32), sr
 

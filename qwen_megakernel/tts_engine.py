@@ -77,6 +77,28 @@ def _import_transformers_auto(name: str):
     )
 
 
+def _normalize_torch_device(device: str) -> str:
+    return "cuda:0" if device == "cuda" else device
+
+
+def _load_qwen3_tts_model(model_path: str, device: str):
+    """Load Qwen3TTSModel without Accelerate meta-tensor dispatch."""
+    from qwen_tts import Qwen3TTSModel
+
+    target_device = _normalize_torch_device(device)
+    model = Qwen3TTSModel.from_pretrained(
+        model_path,
+        dtype=torch.bfloat16,
+        low_cpu_mem_usage=False,
+        attn_implementation="flash_attention_2",
+    )
+    if hasattr(model, "to"):
+        model = model.to(target_device)
+    elif hasattr(model, "model") and hasattr(model.model, "to"):
+        model.model.to(target_device)
+    return model
+
+
 @dataclass
 class TTSConfig:
     """Configuration for the TTS engine."""
@@ -307,18 +329,7 @@ class MegakernelTTSEngine:
             )
 
         import torch
-        from qwen_tts import Qwen3TTSModel
-
-        device_map = self.device
-        if device_map == "cuda":
-            device_map = "cuda:0"
-
-        model = Qwen3TTSModel.from_pretrained(
-            cfg.model_path,
-            device_map=device_map,
-            dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
-        )
+        model = _load_qwen3_tts_model(cfg.model_path, self.device)
         prompt_items = model.create_voice_clone_prompt(
             ref_audio=cfg.ref_audio,
             ref_text=cfg.ref_text,

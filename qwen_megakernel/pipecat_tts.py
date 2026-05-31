@@ -29,6 +29,29 @@ from .tts_engine import MegakernelTTSEngine, TTSConfig
 logger = logging.getLogger(__name__)
 
 
+def _normalize_torch_device(device: str) -> str:
+    return "cuda:0" if device == "cuda" else device
+
+
+def _load_official_qwen_tts_model(model_path: str, device: str):
+    """Load Qwen3TTSModel without Accelerate meta-tensor dispatch."""
+    import torch
+    from qwen_tts import Qwen3TTSModel
+
+    target_device = _normalize_torch_device(device)
+    model = Qwen3TTSModel.from_pretrained(
+        model_path,
+        dtype=torch.bfloat16,
+        low_cpu_mem_usage=False,
+        attn_implementation="flash_attention_2",
+    )
+    if hasattr(model, "to"):
+        return model.to(target_device)
+    if hasattr(model, "model") and hasattr(model.model, "to"):
+        model.model.to(target_device)
+    return model
+
+
 class MegakernelTTSService(TTSService):
     """Pipecat TTS service backed by the megakernel TTS engine.
 
@@ -128,23 +151,15 @@ class MegakernelTTSService(TTSService):
                 "and QWEN_TTS_REF_TEXT."
             )
 
-        import torch
-        from qwen_tts import Qwen3TTSModel
-
-        device_map = self._device
-        if device_map == "cuda":
-            device_map = "cuda:0"
         init_started = time.perf_counter()
         logger.info(
-            "Initializing official Qwen voice-clone model model=%s device_map=%s",
+            "Initializing official Qwen voice-clone model model=%s device=%s",
             self._config.model_path,
-            device_map,
+            _normalize_torch_device(self._device),
         )
-        self._official_model = Qwen3TTSModel.from_pretrained(
+        self._official_model = _load_official_qwen_tts_model(
             self._config.model_path,
-            device_map=device_map,
-            dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            self._device,
         )
         logger.info(
             "Official Qwen voice-clone model initialized duration_ms=%.1f",

@@ -73,6 +73,7 @@ def _client_label(client) -> str:
 async def run_bot(transport):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+    from pipecat.observers.loggers.transcription_log_observer import TranscriptionLogObserver
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -134,6 +135,7 @@ async def run_bot(transport):
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
+            observers=[TranscriptionLogObserver()],
         ),
     )
 

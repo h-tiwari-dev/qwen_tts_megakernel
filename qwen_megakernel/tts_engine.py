@@ -492,20 +492,29 @@ class MegakernelTTSEngine:
         """Load the speech tokenizer for codec → waveform decoding."""
         target_device = _normalize_torch_device(self.device)
         self._patch_check_model_inputs()
-        try:
-            from qwen_tts import Qwen3TTSTokenizer
-
-            self.speech_tokenizer = Qwen3TTSTokenizer.from_pretrained(
-                vocoder_path,
-                device_map=target_device,
-                dtype=torch.bfloat16,
-                attn_implementation="eager",
-            )
-            self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
-            self._log(f"Vocoder loaded via Qwen3TTSTokenizer (sample rate: {self.sample_rate} Hz)")
-            return
-        except Exception as e:
-            self._log(f"Official vocoder load failed, trying manual loader: {e}")
+        # Try loading with progressively more permissive kwargs to handle
+        # transformers 4.x vs 5.x API changes (device_map, dtype vs torch_dtype).
+        for _kwargs in [
+            dict(device_map=target_device, torch_dtype=torch.bfloat16, attn_implementation="eager"),
+            dict(device_map="auto",        torch_dtype=torch.bfloat16, attn_implementation="eager"),
+            dict(torch_dtype=torch.bfloat16),
+            dict(),
+        ]:
+            try:
+                from qwen_tts import Qwen3TTSTokenizer
+                tok = Qwen3TTSTokenizer.from_pretrained(vocoder_path, **_kwargs)
+                # Move to target device if not already there
+                if hasattr(tok, 'model') and hasattr(tok.model, 'to'):
+                    try:
+                        tok.model = tok.model.to(target_device)
+                    except Exception:
+                        pass
+                self.speech_tokenizer = tok
+                self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
+                self._log(f"Vocoder loaded via Qwen3TTSTokenizer kwargs={list(_kwargs)} (sample rate: {self.sample_rate} Hz)")
+                return
+            except Exception as e:
+                self._log(f"Official vocoder load failed (kwargs={list(_kwargs)}): {e}")
 
         # Fallback: load the speech tokenizer model directly from the
         # speech_tokenizer/ subfolder, bypassing AutoFeatureExtractor.
@@ -574,12 +583,13 @@ class MegakernelTTSEngine:
                 local_dir = snapshot_download(vocoder_path)
                 subfolder_path = os.path.join(local_dir, "speech_tokenizer")
 
-            self.speech_tokenizer = Qwen3TTSTokenizer.from_pretrained(
-                subfolder_path,
-                device_map=target_device,
-                dtype=torch.bfloat16,
-                attn_implementation="eager",
-            )
+            tok = Qwen3TTSTokenizer.from_pretrained(subfolder_path, torch_dtype=torch.bfloat16)
+            if hasattr(tok, 'model') and hasattr(tok.model, 'to'):
+                try:
+                    tok.model = tok.model.to(target_device)
+                except Exception:
+                    pass
+            self.speech_tokenizer = tok
             self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
             self._log(f"Vocoder loaded via subfolder path (sample rate: {self.sample_rate} Hz)")
             return

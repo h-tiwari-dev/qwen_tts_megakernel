@@ -86,19 +86,20 @@ def _normalize_torch_device(device: str) -> str:
 
 
 def _load_qwen3_tts_model(model_path: str, device: str):
-    """Load Qwen3TTSModel without Accelerate meta-tensor dispatch."""
+    """Load Qwen3TTSModel for one-shot reference prompt building."""
     from qwen_tts import Qwen3TTSModel
 
-    target_device = _normalize_torch_device(device)
-    model = Qwen3TTSModel.from_pretrained(
+    return Qwen3TTSModel.from_pretrained(
         model_path,
         low_cpu_mem_usage=False,
     )
-    if hasattr(model, "to"):
-        model = model.to(target_device)
-    elif hasattr(model, "model") and hasattr(model.model, "to"):
-        model.model.to(target_device)
-    return model
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _voice_prompt_cache_path(cfg: "TTSConfig") -> Optional[Path]:
@@ -225,7 +226,17 @@ class MegakernelTTSEngine:
         self._timed(f"Loading vocoder from {cfg.vocoder_path}", lambda: self._load_vocoder(cfg.vocoder_path))
 
         if cfg.ref_audio:
-            self._timed("Building Qwen3-TTS voice clone prompt", self._load_voice_clone_prompt)
+            try:
+                self._timed("Building Qwen3-TTS voice clone prompt", self._load_voice_clone_prompt)
+            except Exception as exc:
+                self._voice_clone_prompt = None
+                if _env_bool("QWEN_TTS_REQUIRE_REF_PROMPT", False):
+                    raise
+                self._log(
+                    "Warning: Qwen3-TTS voice clone prompt failed; continuing "
+                    f"without reference prompting. Set QWEN_TTS_REQUIRE_REF_PROMPT=true "
+                    f"to fail fast. Error: {type(exc).__name__}: {exc}"
+                )
 
         # Precompute constant embeddings (TTS special tokens + role tokens + codec tags)
         self._log("Precomputing constant embeddings...")

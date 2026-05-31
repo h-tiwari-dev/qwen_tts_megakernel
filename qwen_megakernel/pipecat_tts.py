@@ -42,10 +42,18 @@ def _load_official_qwen_tts_model(model_path: str, device: str):
         model_path,
         low_cpu_mem_usage=False,
     )
-    if hasattr(model, "to"):
-        return model.to(target_device)
-    if hasattr(model, "model") and hasattr(model.model, "to"):
-        model.model.to(target_device)
+    try:
+        if hasattr(model, "to"):
+            return model.to(target_device)
+        if hasattr(model, "model") and hasattr(model.model, "to"):
+            model.model.to(target_device)
+    except NotImplementedError as exc:
+        logger.warning(
+            "Could not move official Qwen TTS model to %s during load; "
+            "continuing on the loader's default device: %s",
+            target_device,
+            exc,
+        )
     return model
 
 

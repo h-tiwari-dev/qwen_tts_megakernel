@@ -90,6 +90,7 @@ QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Rep
 QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
 QWEN_TTS_VOICE_PROMPT_CACHE=1
 QWEN_TTS_VOICE_PROMPT_CACHE_DIR=~/.cache/qwen_megakernel
+QWEN_TTS_REQUIRE_REF_PROMPT=false
 QWEN_TTS_X_VECTOR_ONLY=false
 QWEN_TTS_DO_SAMPLE=false
 QWEN_TTS_TEMPERATURE=0.9
@@ -107,7 +108,9 @@ full-utterance vocoder decode. Set
 `QWEN_TTS_STREAMING_MODE=chunked` for the low-latency streaming path after
 audio quality is confirmed. The default reference audio/text are the official
 Qwen3-TTS voice-clone sample; set `QWEN_TTS_REF_AUDIO=` and
-`QWEN_TTS_REF_TEXT=` to disable reference prompting.
+`QWEN_TTS_REF_TEXT=` to disable reference prompting. Reference prompt failures
+are non-fatal by default so the bot can still start; set
+`QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast instead.
 
 For Base-model voice cloning on the megakernel path, provide a reference clip
 and its transcript:

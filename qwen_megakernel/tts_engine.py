@@ -229,16 +229,18 @@ class MegakernelTTSEngine:
         # Load speech tokenizer (vocoder)
         self._timed(f"Loading vocoder from {cfg.vocoder_path}", lambda: self._load_vocoder(cfg.vocoder_path))
 
-        # Vocoder self-test: run a minimal decode to verify the decoder path works.
+        # Vocoder self-test: run a minimal decode to catch hard failures
+        # (e.g. version mismatches) before the first real utterance.
+        # Use small random codes matching the real call shape [T, NUM_CODE_GROUPS].
+        # A test failure is logged but does NOT disable the vocoder — the real
+        # warmup synthesis pass below will surface any persistent failure.
         if self.speech_tokenizer is not None:
             try:
-                dummy_codes = torch.zeros(1, NUM_CODE_GROUPS, dtype=torch.long, device=self.device)
+                dummy_codes = torch.randint(1, 100, (1, NUM_CODE_GROUPS), dtype=torch.long, device=self.device)
                 _ = self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
                 self._log("Vocoder self-test passed")
             except Exception as exc:
-                self._log(f"Vocoder self-test failed ({exc}); disabling vocoder")
-                self.speech_tokenizer = None
-                self.sample_rate = self.config.sample_rate
+                self._log(f"Vocoder self-test warning ({exc}); will verify again during warmup")
 
         if cfg.ref_audio:
             try:

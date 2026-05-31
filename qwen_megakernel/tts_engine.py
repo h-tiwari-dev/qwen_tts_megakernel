@@ -452,10 +452,17 @@ class MegakernelTTSEngine:
             model = AutoModel.from_pretrained(
                 vocoder_path,
                 subfolder='speech_tokenizer',
-                device_map=self.device,
-                dtype=torch.bfloat16,
+                low_cpu_mem_usage=False,
                 trust_remote_code=True,
             )
+            target_device = _normalize_torch_device(self.device)
+            try:
+                model = model.to(target_device)
+            except NotImplementedError as exc:
+                self._log(
+                    f"Could not move vocoder to {target_device}; continuing on "
+                    f"loader default device: {exc}"
+                )
 
             # Create Qwen3TTSTokenizer wrapper (skip feature_extractor — not needed for decode)
             from qwen_tts import Qwen3TTSTokenizer
@@ -463,7 +470,7 @@ class MegakernelTTSEngine:
             self.speech_tokenizer.model = model
             self.speech_tokenizer.feature_extractor = None
             self.speech_tokenizer.config = model.config
-            self.speech_tokenizer.device = model.device
+            self.speech_tokenizer.device = next(model.parameters()).device
             self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
             self._log(f"Vocoder loaded (sample rate: {self.sample_rate} Hz)")
             return

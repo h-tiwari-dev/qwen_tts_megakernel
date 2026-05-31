@@ -110,7 +110,8 @@ audio quality is confirmed. The default reference audio/text are the official
 Qwen3-TTS voice-clone sample; set `QWEN_TTS_REF_AUDIO=` and
 `QWEN_TTS_REF_TEXT=` to disable reference prompting. Reference prompt failures
 are non-fatal by default so the bot can still start; set
-`QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast instead.
+`QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast instead. Vocoder failures remain
+fatal for synthesis because the service refuses to emit silent audio.
 
 For Base-model voice cloning on the megakernel path, provide a reference clip
 and its transcript:

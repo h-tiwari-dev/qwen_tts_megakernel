@@ -340,7 +340,7 @@ class MegakernelTTSService(TTSService):
 
         except Exception as e:
             logger.error(f"{self} TTS exception: {e}")
-            yield ErrorFrame(error=f"Megakernel TTS error: {e}")
+            raise
         finally:
             elapsed_s = time.perf_counter() - utterance_started
             audio_duration_s = audio_bytes / 2 / sample_rate if sample_rate else 0.0

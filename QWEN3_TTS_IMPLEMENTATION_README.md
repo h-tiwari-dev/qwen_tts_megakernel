@@ -141,6 +141,9 @@ The voice bot defaults favor natural TTS quality:
 ```bash
 QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav
 QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
+QWEN_TTS_WARMUP_PROFILE=fast
+QWEN_TTS_VOICE_PROMPT_CACHE=1
+QWEN_TTS_VOICE_PROMPT_CACHE_DIR=~/.cache/qwen_megakernel
 QWEN_TTS_DO_SAMPLE=true
 QWEN_TTS_TEMPERATURE=0.8
 QWEN_TTS_TOP_K=50
@@ -150,8 +153,10 @@ QWEN_TTS_SUBTALKER_TOP_K=50
 ```
 
 The reference audio/text come from the official Qwen3-TTS voice-clone example.
-For deterministic debugging, override both sampling flags to `false`. To disable
-reference prompting, set `QWEN_TTS_REF_AUDIO=` and `QWEN_TTS_REF_TEXT=`.
+The first startup builds and caches the voice-clone prompt; later restarts
+reuse it. For deterministic debugging, override both sampling flags to `false`.
+To disable reference prompting, set `QWEN_TTS_REF_AUDIO=` and
+`QWEN_TTS_REF_TEXT=`.
 
 Full Pipecat voice agent:
 

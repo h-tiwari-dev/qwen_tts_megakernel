@@ -140,7 +140,7 @@ def create_tts_service():
     model_path = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     device = os.getenv("QWEN_TTS_DEVICE", "cuda")
     chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
-    warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "full")
+    warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "fast")
     streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
     ref_audio = _env_optional("QWEN_TTS_REF_AUDIO", DEFAULT_QWEN_TTS_REF_AUDIO)
     ref_text = _env_optional("QWEN_TTS_REF_TEXT", DEFAULT_QWEN_TTS_REF_TEXT)

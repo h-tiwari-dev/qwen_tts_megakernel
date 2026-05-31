@@ -83,11 +83,13 @@ The WebRTC runner loads `.env` and `.env.local`, requires
 OPENAI_MODEL=gpt-4.1-mini
 QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CHUNK_FRAMES=10
-QWEN_TTS_WARMUP_PROFILE=full
+QWEN_TTS_WARMUP_PROFILE=fast
 QWEN_TTS_STREAMING_MODE=full_decode
 QWEN_TTS_BACKEND=megakernel
 QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav
 QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
+QWEN_TTS_VOICE_PROMPT_CACHE=1
+QWEN_TTS_VOICE_PROMPT_CACHE_DIR=~/.cache/qwen_megakernel
 QWEN_TTS_X_VECTOR_ONLY=false
 QWEN_TTS_DO_SAMPLE=false
 QWEN_TTS_TEMPERATURE=0.9
@@ -97,10 +99,11 @@ QWEN_TTS_SUBTALKER_TEMPERATURE=0.9
 QWEN_TTS_SUBTALKER_TOP_K=50
 ```
 
-Use `QWEN_TTS_WARMUP_PROFILE=fast` for quicker debugging startup, or `full`
-for the lower first-response latency expected in the voice demo. The default
-TTS settings favor voice stability while the megakernel prompt path is being
-validated: deterministic sampling and full-utterance vocoder decode. Set
+Use `QWEN_TTS_WARMUP_PROFILE=full` for more exhaustive startup warmup if first
+utterance latency matters more than process startup time. The default TTS
+settings favor voice stability while the megakernel prompt path is being
+validated: deterministic sampling, cached voice-clone prompting, and
+full-utterance vocoder decode. Set
 `QWEN_TTS_STREAMING_MODE=chunked` for the low-latency streaming path after
 audio quality is confirmed. The default reference audio/text are the official
 Qwen3-TTS voice-clone sample; set `QWEN_TTS_REF_AUDIO=` and

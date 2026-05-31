@@ -35,15 +35,12 @@ def _normalize_torch_device(device: str) -> str:
 
 def _load_official_qwen_tts_model(model_path: str, device: str):
     """Load Qwen3TTSModel without Accelerate meta-tensor dispatch."""
-    import torch
     from qwen_tts import Qwen3TTSModel
 
     target_device = _normalize_torch_device(device)
     model = Qwen3TTSModel.from_pretrained(
         model_path,
-        dtype=torch.bfloat16,
         low_cpu_mem_usage=False,
-        attn_implementation="flash_attention_2",
     )
     if hasattr(model, "to"):
         return model.to(target_device)

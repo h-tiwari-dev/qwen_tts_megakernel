@@ -10,8 +10,12 @@ Streaming: yields audio chunks as codec frames accumulate.
 """
 
 import asyncio
+import hashlib
+import json
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import AsyncGenerator, Generator, Optional
 
 import numpy as np
@@ -88,15 +92,33 @@ def _load_qwen3_tts_model(model_path: str, device: str):
     target_device = _normalize_torch_device(device)
     model = Qwen3TTSModel.from_pretrained(
         model_path,
-        dtype=torch.bfloat16,
         low_cpu_mem_usage=False,
-        attn_implementation="flash_attention_2",
     )
     if hasattr(model, "to"):
         model = model.to(target_device)
     elif hasattr(model, "model") and hasattr(model.model, "to"):
         model.model.to(target_device)
     return model
+
+
+def _voice_prompt_cache_path(cfg: "TTSConfig") -> Optional[Path]:
+    cache_setting = os.getenv("QWEN_TTS_VOICE_PROMPT_CACHE", "1").strip().lower()
+    if cache_setting in {"0", "false", "no", "off"}:
+        return None
+    cache_dir = Path(
+        os.getenv("QWEN_TTS_VOICE_PROMPT_CACHE_DIR", "~/.cache/qwen_megakernel")
+    ).expanduser()
+    payload = {
+        "model_path": cfg.model_path,
+        "ref_audio": cfg.ref_audio,
+        "ref_text": cfg.ref_text,
+        "x_vector_only_mode": cfg.x_vector_only_mode,
+        "format": 1,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    ).hexdigest()[:24]
+    return cache_dir / f"voice_prompt_{digest}.pt"
 
 
 @dataclass
@@ -329,6 +351,24 @@ class MegakernelTTSEngine:
             )
 
         import torch
+        cache_path = _voice_prompt_cache_path(cfg)
+        if cache_path and cache_path.exists():
+            try:
+                cached = torch.load(cache_path, map_location=self.device)
+                self._voice_clone_prompt = {
+                    "ref_code": None
+                    if cached.get("ref_code") is None
+                    else cached["ref_code"].to(self.device).long(),
+                    "ref_spk_embedding": cached["ref_spk_embedding"].to(self.device).to(torch.bfloat16),
+                    "x_vector_only_mode": bool(cached["x_vector_only_mode"]),
+                    "icl_mode": bool(cached["icl_mode"]),
+                    "ref_text": cached.get("ref_text"),
+                }
+                self._log(f"Loaded Qwen3-TTS voice clone prompt cache from {cache_path}")
+                return
+            except Exception as exc:
+                self._log(f"Ignoring unreadable voice clone prompt cache {cache_path}: {exc}")
+
         model = _load_qwen3_tts_model(cfg.model_path, self.device)
         prompt_items = model.create_voice_clone_prompt(
             ref_audio=cfg.ref_audio,
@@ -348,6 +388,23 @@ class MegakernelTTSEngine:
             "icl_mode": bool(item.icl_mode),
             "ref_text": item.ref_text,
         }
+
+        if cache_path:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "ref_code": None if ref_code is None else ref_code.detach().cpu(),
+                        "ref_spk_embedding": ref_spk_embedding.detach().cpu(),
+                        "x_vector_only_mode": bool(item.x_vector_only_mode),
+                        "icl_mode": bool(item.icl_mode),
+                        "ref_text": item.ref_text,
+                    },
+                    cache_path,
+                )
+                self._log(f"Saved Qwen3-TTS voice clone prompt cache to {cache_path}")
+            except Exception as exc:
+                self._log(f"Could not save voice clone prompt cache {cache_path}: {exc}")
 
         del model
         torch.cuda.empty_cache()

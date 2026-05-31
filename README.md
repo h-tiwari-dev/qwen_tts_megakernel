@@ -332,6 +332,100 @@ For the take-home I would include:
   vars,
 - an honest note about any fallbacks used during the recording.
 
+## Voice Consistency Problem and How It Was Solved
+
+### The root cause
+
+`Qwen3-TTS-12Hz-0.6B-Base` is a **Base model** — it is not an instruction-tuned
+voice model with a fixed speaker. Its talker decoder is conditioned on a
+speaker embedding plus an optional in-context learning (ICL) block of reference
+speech. Without that conditioning, the model samples a random speaker from its
+training distribution on every utterance, so the voice changes with every
+sentence. In a real-time voice agent this is immediately noticeable: the bot
+sounds like a different person every time it speaks.
+
+### What happens under the hood
+
+The talker decode loop (in `tts_engine.py`) builds a `prefill_embeds` tensor
+that is fed through the talker decoder before any codec frames are generated.
+There are two distinct prefill shapes:
+
+1. **No voice prompt (8 steps):**
+   `[role(3)] + [fused_tags(4)] + [first_text+bos(1)]`
+   The model has no speaker context. The starting hidden state is determined
+   purely by the text tokens. The speaker is sampled stochastically at decode
+   time, resulting in a different voice every run.
+
+2. **Voice-clone prefill (110+ steps):**
+   `[role(3)] + [speaker_embedding(1)] + [codec_nothink/think_bos/think_eos(3)] +
+   [codec_bos(1)] + [ICL_ref_text_and_ref_codec_interleaved(~100)]`
+   The model sees the speaker's x-vector embedding, then a full in-context
+   reference of the target voice (reference text tokens fused with reference
+   codec frames from the audio), before generating the target speech. This locks
+   the speaker identity.
+
+Without the voice-clone path, the talker essentially hallucinates a new speaker
+identity from its training set every time `talker.reset()` is called between
+utterances.
+
+### The fix
+
+We call `Qwen3TTSModel.create_voice_clone_prompt()` from the official Qwen
+package once at engine startup to:
+
+1. **Extract the x-vector speaker embedding** from the reference WAV via the
+   built-in speaker encoder. This is a compact `[1024]` vector capturing voice
+   timbre.
+2. **Encode the reference audio to codec frames** using the built-in codec
+   model, producing `ref_code: [T_ref, 16]` (16 codebook groups per frame).
+3. **Store the result** as `_voice_clone_prompt` on `MegakernelTTSEngine`.
+
+At each synthesis call, `_build_voice_clone_prefill()` assembles the 110-step
+prefill block by interleaving reference text embeddings with reference codec
+embeddings, with the speaker embedding injected at the tag position. This entire
+block is fed through `talker.prefill_parallel()` once per utterance, anchoring
+the decoder's KV cache to the target speaker before the first codec frame is
+sampled.
+
+### Performance impact of the voice-clone prefill
+
+The voice-clone prefill is ~110 steps (vs 8 without). Before the parallel
+prefill kernel was added, this ran as 110 sequential megakernel decode launches
+with a per-step GPU→CPU sync (`_out_token.item()`), which was the primary
+source of the "stuck" hang reported in early runs. The fix was to:
+
+1. Add `TTSDecoder.prefill_with_embeds()` — queue all 110 launches on the CUDA
+   stream back-to-back, pay only one sync at the end (~5× faster).
+2. Add `TTSDecoder.prefill_parallel()` — run all 110 positions in a single
+   parallel forward pass via cuBLAS GEMMs + PyTorch SDPA (flash-attention),
+   collapsing 110 launches into ~28 (one per layer). Prefill time went from
+   "hung" / several seconds to **30–40 ms**.
+
+### Caching
+
+Building the voice-clone prompt requires loading the full `Qwen3TTSModel`
+(speaker encoder + codec encoder), which takes ~2–4 seconds and ~3 GB of VRAM.
+We load it once, extract the tensors, then `del model` and free VRAM before
+the megakernel engine starts. The result (`ref_spk_embedding`, `ref_code`,
+`ref_text`, `icl_mode`) is written to
+`~/.cache/qwen_megakernel/voice_prompt_<sha256>.pt` keyed on
+`(model_path, ref_audio, ref_text, x_vector_only_mode)`. Subsequent starts load
+from disk in milliseconds.
+
+### Env vars
+
+| Variable | Purpose |
+|---|---|
+| `QWEN_TTS_REF_AUDIO` | Path or URL to reference WAV (enables voice clone) |
+| `QWEN_TTS_REF_TEXT` | Exact transcript of the reference audio (required for ICL) |
+| `QWEN_TTS_X_VECTOR_ONLY` | `true` = inject speaker embedding only, no ICL reference codec |
+| `QWEN_TTS_VOICE_PROMPT_CACHE` | `0` to disable on-disk caching of the prompt tensors |
+| `QWEN_TTS_VOICE_PROMPT_CACHE_DIR` | Cache directory (default `~/.cache/qwen_megakernel`) |
+| `QWEN_TTS_REQUIRE_REF_PROMPT` | `true` = hard-fail at startup if the voice prompt cannot be built |
+
+Without `QWEN_TTS_REF_AUDIO` the engine falls back to the 8-step unconditioned
+prefill and voice identity is random per utterance.
+
 ## Current Caveats
 
 - The talker decode path is megakernel-backed. The official Qwen vocoder is

@@ -129,6 +129,49 @@ PY
 )"
 
 if [[ "$WHEEL_URL" == "NO_MATCH" || -z "$WHEEL_URL" ]]; then
+  WHEEL_URL="$(
+  INFO_JSON="$INFO_JSON" python - <<'PY'
+import json
+import os
+
+info = json.loads(os.environ["INFO_JSON"])
+allow_community = os.getenv("ALLOW_COMMUNITY_FLASH_ATTN_WHEELS", "1") != "0"
+
+# Official FlashAttention releases can lag new CUDA/PyTorch stacks. This
+# community wheel is linked from Dao-AILab/flash-attention issue #2442 and
+# covers the common CUDA 13 / Torch 2.11 / Python 3.12 Linux stack.
+community_wheels = [
+    {
+        "cuda_major": "13",
+        "torch_mm": "2.11",
+        "py_tag": "cp312",
+        "plat": "linux_x86_64",
+        "abi": "TRUE",
+        "url": (
+            "https://github.com/adithyaxx/flash-attention/releases/download/v2.8.3/"
+            "flash_attn-2.8.3%2Bcu13torch2.11cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+        ),
+    },
+]
+
+if allow_community:
+    for wheel in community_wheels:
+        if all(str(info.get(key)) == value for key, value in wheel.items() if key != "url"):
+            print(wheel["url"])
+            break
+    else:
+        print("NO_MATCH")
+else:
+    print("NO_MATCH")
+PY
+  )"
+  if [[ "$WHEEL_URL" != "NO_MATCH" && -n "$WHEEL_URL" ]]; then
+    echo "Using matching community prebuilt wheel."
+    echo "Set ALLOW_COMMUNITY_FLASH_ATTN_WHEELS=0 to disable this fallback."
+  fi
+fi
+
+if [[ "$WHEEL_URL" == "NO_MATCH" || -z "$WHEEL_URL" ]]; then
   echo "No exact official prebuilt wheel found. Falling back to faster source build."
   echo "If RAM is limited, keep MAX_JOBS low."
   MAX_JOBS="${MAX_JOBS:-4}" python -m pip install flash-attn --no-build-isolation

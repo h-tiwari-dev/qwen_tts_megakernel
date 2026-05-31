@@ -22,6 +22,14 @@ SYSTEM_INSTRUCTION = (
     "implementation."
 )
 
+DEFAULT_QWEN_TTS_REF_AUDIO = (
+    "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav"
+)
+DEFAULT_QWEN_TTS_REF_TEXT = (
+    "Okay. Yeah. I resent you. I love you. I respect you. But you know what? "
+    "You blew it! And thanks to you."
+)
+
 
 def load_env_files() -> None:
     """Load .env and .env.local without overriding variables already exported."""
@@ -121,6 +129,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional(name: str, default: str) -> str:
+    value = os.getenv(name)
+    return default if value is None else value
+
+
 def create_tts_service():
     from qwen_megakernel.pipecat_tts import MegakernelTTSService
 
@@ -129,8 +142,8 @@ def create_tts_service():
     chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
     warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "full")
     streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
-    ref_audio = os.getenv("QWEN_TTS_REF_AUDIO")
-    ref_text = os.getenv("QWEN_TTS_REF_TEXT")
+    ref_audio = _env_optional("QWEN_TTS_REF_AUDIO", DEFAULT_QWEN_TTS_REF_AUDIO)
+    ref_text = _env_optional("QWEN_TTS_REF_TEXT", DEFAULT_QWEN_TTS_REF_TEXT)
     x_vector_only_mode = _env_bool("QWEN_TTS_X_VECTOR_ONLY", False)
     backend = os.getenv("QWEN_TTS_BACKEND", "megakernel")
     language = os.getenv("QWEN_TTS_LANGUAGE", "English")

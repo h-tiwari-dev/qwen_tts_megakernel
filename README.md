@@ -86,8 +86,8 @@ QWEN_TTS_CHUNK_FRAMES=10
 QWEN_TTS_WARMUP_PROFILE=full
 QWEN_TTS_STREAMING_MODE=full_decode
 QWEN_TTS_BACKEND=megakernel
-QWEN_TTS_REF_AUDIO=
-QWEN_TTS_REF_TEXT=
+QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav
+QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
 QWEN_TTS_X_VECTOR_ONLY=false
 QWEN_TTS_DO_SAMPLE=false
 QWEN_TTS_TEMPERATURE=0.9
@@ -102,7 +102,9 @@ for the lower first-response latency expected in the voice demo. The default
 TTS settings favor voice stability while the megakernel prompt path is being
 validated: deterministic sampling and full-utterance vocoder decode. Set
 `QWEN_TTS_STREAMING_MODE=chunked` for the low-latency streaming path after
-audio quality is confirmed.
+audio quality is confirmed. The default reference audio/text are the official
+Qwen3-TTS voice-clone sample; set `QWEN_TTS_REF_AUDIO=` and
+`QWEN_TTS_REF_TEXT=` to disable reference prompting.
 
 For Base-model voice cloning on the megakernel path, provide a reference clip
 and its transcript:

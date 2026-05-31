@@ -113,7 +113,9 @@ are non-fatal by default so the bot can still start; set
 `QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast instead. Vocoder failures remain
 fatal for synthesis because the service refuses to emit silent audio. The
 default `fast` warmup profile skips vocoder decode warmup; `full` runs a
-vocoder decode check and disables the vocoder if that check fails.
+vocoder decode check and disables the vocoder if that check fails. In
+`full_decode` mode, a missing megakernel vocoder falls back to official
+Qwen voice-clone synthesis when reference audio/text are configured.
 
 For Base-model voice cloning on the megakernel path, provide a reference clip
 and its transcript:

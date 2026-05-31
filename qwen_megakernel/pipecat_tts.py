@@ -29,6 +29,9 @@ from .tts_engine import MegakernelTTSEngine, TTSConfig
 logger = logging.getLogger(__name__)
 
 
+VOCODER_UNAVAILABLE_MESSAGE = "Qwen3-TTS vocoder is unavailable"
+
+
 def _normalize_torch_device(device: str) -> str:
     return "cuda:0" if device == "cuda" else device
 
@@ -244,7 +247,21 @@ class MegakernelTTSService(TTSService):
                     )
                     chunks = [(audio, sr)]
                 elif self._streaming_mode == "full_decode":
-                    audio, sr = await loop.run_in_executor(None, engine.synthesize, text)
+                    try:
+                        audio, sr = await loop.run_in_executor(None, engine.synthesize, text)
+                    except RuntimeError as exc:
+                        if VOCODER_UNAVAILABLE_MESSAGE not in str(exc):
+                            raise
+                        if not self._ref_audio or not self._ref_text:
+                            raise
+                        logger.warning(
+                            "Megakernel vocoder unavailable; falling back to official "
+                            "Qwen voice-clone synthesis context_id=%s",
+                            context_id,
+                        )
+                        audio, sr = await loop.run_in_executor(
+                            None, self._synthesize_official_voice_clone, text
+                        )
                     chunks = [(audio, sr)]
                 elif self._streaming_mode == "chunked":
                     chunks = engine.synthesize_streaming(

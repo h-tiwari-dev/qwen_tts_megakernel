@@ -35,6 +35,50 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def create_tts_service():
+    from qwen_megakernel.pipecat_tts import MegakernelTTSService
+
+    model_path = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+    chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
+    streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
+    ref_audio = os.getenv("QWEN_TTS_REF_AUDIO")
+    ref_text = os.getenv("QWEN_TTS_REF_TEXT")
+    backend = os.getenv(
+        "QWEN_TTS_BACKEND",
+        "official_voice_clone" if ref_audio and ref_text else "megakernel",
+    )
+    language = os.getenv("QWEN_TTS_LANGUAGE", "English")
+    do_sample = _env_bool("QWEN_TTS_DO_SAMPLE", False)
+    temperature = float(os.getenv("QWEN_TTS_TEMPERATURE", "0.9"))
+    top_k = int(os.getenv("QWEN_TTS_TOP_K", "50"))
+    subtalker_do_sample = _env_bool("QWEN_TTS_SUBTALKER_DO_SAMPLE", do_sample)
+    subtalker_temperature = float(os.getenv("QWEN_TTS_SUBTALKER_TEMPERATURE", str(temperature)))
+    subtalker_top_k = int(os.getenv("QWEN_TTS_SUBTALKER_TOP_K", str(top_k)))
+
+    return MegakernelTTSService(
+        model_path=model_path,
+        chunk_frames=chunk_frames,
+        streaming_mode=streaming_mode,
+        backend=backend,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        language=language,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_k=top_k,
+        subtalker_do_sample=subtalker_do_sample,
+        subtalker_temperature=subtalker_temperature,
+        subtalker_top_k=subtalker_top_k,
+    )
+
+
 async def run_voice_pipeline(args):
     """Run the full STT → LLM → TTS voice agent pipeline."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -50,8 +94,6 @@ async def run_voice_pipeline(args):
     from pipecat.services.deepgram.stt import DeepgramSTTService
     from pipecat.services.openai.llm import OpenAILLMService
 
-    from qwen_megakernel.pipecat_tts import MegakernelTTSService
-
     # --- Services ---
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
@@ -60,10 +102,8 @@ async def run_voice_pipeline(args):
         model="gpt-4o-mini",
     )
 
-    tts = MegakernelTTSService(
-        model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        chunk_frames=10,
-    )
+    tts = create_tts_service()
+    await tts.warmup()
 
     # --- LLM context ---
     messages = [
@@ -167,12 +207,8 @@ async def run_text_only_pipeline(args):
 
     from pipecat.frames.frames import TTSAudioRawFrame
 
-    from qwen_megakernel.pipecat_tts import MegakernelTTSService
-
-    tts = MegakernelTTSService(
-        model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        chunk_frames=10,
-    )
+    tts = create_tts_service()
+    await tts.warmup()
 
     print("=" * 60)
     print("MEGAKERNEL TTS — TEXT-ONLY PIPECAT MODE")

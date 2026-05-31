@@ -128,20 +128,31 @@ def create_tts_service():
     device = os.getenv("QWEN_TTS_DEVICE", "cuda")
     chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
     warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "full")
-    do_sample = _env_bool("QWEN_TTS_DO_SAMPLE", True)
-    temperature = float(os.getenv("QWEN_TTS_TEMPERATURE", "0.8"))
+    streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
+    ref_audio = os.getenv("QWEN_TTS_REF_AUDIO")
+    ref_text = os.getenv("QWEN_TTS_REF_TEXT")
+    backend = os.getenv(
+        "QWEN_TTS_BACKEND",
+        "official_voice_clone" if ref_audio and ref_text else "megakernel",
+    )
+    language = os.getenv("QWEN_TTS_LANGUAGE", "English")
+    do_sample = _env_bool("QWEN_TTS_DO_SAMPLE", False)
+    temperature = float(os.getenv("QWEN_TTS_TEMPERATURE", "0.9"))
     top_k = int(os.getenv("QWEN_TTS_TOP_K", "50"))
     subtalker_do_sample = _env_bool("QWEN_TTS_SUBTALKER_DO_SAMPLE", do_sample)
     subtalker_temperature = float(os.getenv("QWEN_TTS_SUBTALKER_TEMPERATURE", str(temperature)))
     subtalker_top_k = int(os.getenv("QWEN_TTS_SUBTALKER_TOP_K", str(top_k)))
     logger.info(
         "Initializing Megakernel TTS service model=%s device=%s chunk_frames=%s "
-        "warmup_profile=%s do_sample=%s subtalker_do_sample=%s temperature=%.2f "
+        "warmup_profile=%s streaming_mode=%s backend=%s do_sample=%s "
+        "subtalker_do_sample=%s temperature=%.2f "
         "subtalker_temperature=%.2f top_k=%s subtalker_top_k=%s",
         model_path,
         device,
         chunk_frames,
         warmup_profile,
+        streaming_mode,
+        backend,
         do_sample,
         subtalker_do_sample,
         temperature,
@@ -154,6 +165,11 @@ def create_tts_service():
         device=device,
         chunk_frames=chunk_frames,
         warmup_profile=warmup_profile,
+        streaming_mode=streaming_mode,
+        backend=backend,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        language=language,
         do_sample=do_sample,
         temperature=temperature,
         top_k=top_k,

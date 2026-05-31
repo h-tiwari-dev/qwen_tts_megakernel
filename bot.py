@@ -139,9 +139,9 @@ def create_tts_service():
 
     model_path = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     device = os.getenv("QWEN_TTS_DEVICE", "cuda")
-    chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "10"))
+    chunk_frames = int(os.getenv("QWEN_TTS_CHUNK_FRAMES", "2"))
     warmup_profile = os.getenv("QWEN_TTS_WARMUP_PROFILE", "fast")
-    streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "full_decode")
+    streaming_mode = os.getenv("QWEN_TTS_STREAMING_MODE", "chunked")
     ref_audio = _env_optional("QWEN_TTS_REF_AUDIO", DEFAULT_QWEN_TTS_REF_AUDIO)
     ref_text = _env_optional("QWEN_TTS_REF_TEXT", DEFAULT_QWEN_TTS_REF_TEXT)
     x_vector_only_mode = _env_bool("QWEN_TTS_X_VECTOR_ONLY", False)
@@ -259,12 +259,52 @@ async def run_bot(transport):
         ]
     )
 
+    observers = [TranscriptionLogObserver()]
+
+    try:
+        from pipecat.observers.loggers.metrics_log_observer import MetricsLogObserver
+
+        observers.append(MetricsLogObserver())
+        logger.info("Enabled Pipecat MetricsLogObserver for per-service metrics")
+    except Exception as exc:
+        logger.warning("Pipecat MetricsLogObserver unavailable: %s", exc)
+
+    try:
+        from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
+
+        latency_observer = UserBotLatencyObserver()
+
+        @latency_observer.event_handler("on_latency_measured")
+        async def on_latency_measured(observer, latency_seconds):
+            logger.info(
+                "Voice pipeline latency user_to_bot_ms=%.1f",
+                latency_seconds * 1000,
+            )
+
+        @latency_observer.event_handler("on_first_bot_speech_latency")
+        async def on_first_bot_speech_latency(observer, latency_seconds):
+            logger.info(
+                "Voice pipeline first_bot_speech_ms=%.1f",
+                latency_seconds * 1000,
+            )
+
+        @latency_observer.event_handler("on_latency_breakdown")
+        async def on_latency_breakdown(observer, breakdown):
+            logger.info("Voice pipeline latency breakdown:")
+            for event in breakdown.chronological_events():
+                logger.info("  %s", event)
+
+        observers.append(latency_observer)
+        logger.info("Enabled Pipecat UserBotLatencyObserver for whole-turn metrics")
+    except Exception as exc:
+        logger.warning("Pipecat UserBotLatencyObserver unavailable: %s", exc)
+
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
-            observers=[TranscriptionLogObserver()],
+            observers=observers,
         ),
     )
 

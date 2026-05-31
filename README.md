@@ -1,90 +1,62 @@
-## Qwen 0.6B Megakernel for RTX 5090
+# Qwen3-TTS Megakernel Voice Agent
 
-This megakernel is aggressively optimized for Qwen3-0.6B (bf16) shapes to be run on an RTX 5090.
+This is my RTX 5090 Qwen3-TTS take-home implementation. I started from
+AlpinDale's Qwen3 decode megakernel and adapted it so the Qwen3-TTS talker
+decoder can run through the CUDA megakernel, then wired that TTS path into a
+Pipecat voice-agent pipeline.
 
-More details on this blogpost: https://blog.alpindale.net/posts/5090_decode_optimization/
+The end-to-end voice path is:
+
+```text
+Browser/Daily mic
+  -> Pipecat transport
+  -> Deepgram STT
+  -> OpenAI LLM
+  -> Megakernel-backed Qwen3-TTS service
+  -> Pipecat audio output
+```
+
+The original megakernel benchmark from this repo is still available:
 
 | Backend      | tok/s  | ms/tok | Speedup |
 | ------------ | ------ | ------ | ------- |
 | PyTorch (HF) | 123.3  | 8.11   | 1.00x   |
 | Megakernel   | 1036.3 | 0.99   | 8.40x   |
 
-To use this:
+More context on the original kernel: https://blog.alpindale.net/posts/5090_decode_optimization/
 
-```bash
-uv pip install -r requirements.txt
-python -m qwen_megakernel.bench
-```
+## What I Changed
 
-Not tested on any other GPU, and likely won't run or work. Needs at least CUDA 12.8.
+I added a Qwen3-TTS path alongside the original text decode path:
 
-### Qwen3-TTS / Pipecat
-
-This fork also includes a Qwen3-TTS integration path:
-
-- `qwen_megakernel/build_tts.py` builds a TTS variant of the extension with a
-  `3072`-way codec head.
+- `qwen_megakernel/build_tts.py` builds a separate TTS extension named
+  `qwen_megakernel_tts_C`.
+- `csrc/kernel.cu` supports a configurable codec vocab size and a sentinel
+  input-token mode so layer 0 can consume a precomputed hidden embedding.
 - `qwen_megakernel/model_tts.py` loads Qwen3-TTS talker/code-predictor weights
-  and wraps the megakernel decode calls.
-- `qwen_megakernel/tts_engine.py` streams text-to-audio chunks.
-- `qwen_megakernel/pipecat_tts.py` exposes a Pipecat `TTSService`.
+  and exposes megakernel-backed decode wrappers.
+- `qwen_megakernel/tts_engine.py` orchestrates text tokenization, talker
+  prefill, codec-frame generation, optional voice-clone prompting, vocoder
+  decode, and streaming audio chunks.
+- `qwen_megakernel/pipecat_tts.py` exposes the engine as a Pipecat `TTSService`.
+- `bot.py` runs the full Pipecat voice pipeline.
 
-Standalone TTS:
+The megakernel is used for the Qwen3-TTS talker decoder. I also route the
+5-layer code predictor through the same extension because it was a practical
+bottleneck during integration. The official Qwen components are still used for
+text/tokenizer utilities, voice-clone prompt construction, and vocoder/audio
+decode.
 
-```bash
-python demo_tts.py "Hello, this is a test." --output /tmp/tts.wav
-```
+## Current Voice Defaults
 
-Streaming TTS with TTFC/RTF reporting:
-
-```bash
-python demo_pipeline.py --text "Hello from the streaming pipeline."
-```
-
-Pipecat text-only demo:
-
-```bash
-python demo_voice_agent.py --text-only
-```
-
-Pipecat WebRTC voice demo:
-
-```bash
-cp .env.example .env
-# Fill in DEEPGRAM_API_KEY, OPENAI_API_KEY, and DAILY_API_KEY if using Daily.
-uv pip install -r requirements.txt
-python bot.py -t webrtc --host 0.0.0.0 --port 7860
-```
-
-Then open `http://localhost:7860/client` in a browser. The audio path is:
-
-```text
-Browser mic -> Pipecat WebRTC -> Deepgram STT -> OpenAI gpt-4.1-mini
-  -> Megakernel TTS -> browser audio output
-```
-
-Pipecat Daily voice demo for cloud/Vast.ai:
-
-```bash
-export DAILY_API_KEY=your-daily-api-key
-python bot.py -t daily --host 0.0.0.0 --port 7860
-```
-
-Then open `http://localhost:7860/daily` locally, or the mapped Vast TCP port
-for internal `7860` plus `/daily`. Daily creates the room and handles WebRTC
-NAT traversal, so this avoids the SmallWebRTC ICE failures that happen on
-shared/NATed cloud hosts.
-
-The WebRTC runner loads `.env` and `.env.local`, requires
-`DEEPGRAM_API_KEY` and `OPENAI_API_KEY`. Daily mode also requires
-`DAILY_API_KEY`. Defaults:
+The default voice settings are optimized for lower first-audio latency:
 
 ```bash
 OPENAI_MODEL=gpt-4.1-mini
 QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
-QWEN_TTS_CHUNK_FRAMES=10
+QWEN_TTS_CHUNK_FRAMES=2
 QWEN_TTS_WARMUP_PROFILE=fast
-QWEN_TTS_STREAMING_MODE=full_decode
+QWEN_TTS_STREAMING_MODE=chunked
 QWEN_TTS_BACKEND=megakernel
 QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav
 QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
@@ -100,85 +72,243 @@ QWEN_TTS_SUBTALKER_TEMPERATURE=0.9
 QWEN_TTS_SUBTALKER_TOP_K=50
 ```
 
-Use `QWEN_TTS_WARMUP_PROFILE=full` for more exhaustive startup warmup if first
-utterance latency matters more than process startup time. The default TTS
-settings favor voice stability while the megakernel prompt path is being
-validated: deterministic sampling, cached voice-clone prompting, and
-full-utterance vocoder decode. Set
-`QWEN_TTS_STREAMING_MODE=chunked` for the low-latency streaming path after
-audio quality is confirmed. The default reference audio/text are the official
-Qwen3-TTS voice-clone sample; set `QWEN_TTS_REF_AUDIO=` and
-`QWEN_TTS_REF_TEXT=` to disable reference prompting. Reference prompt failures
-are non-fatal by default so the bot can still start; set
-`QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast instead. Vocoder failures remain
-fatal for synthesis because the service refuses to emit silent audio. The
-default `fast` warmup profile skips vocoder decode warmup; `full` runs a
-vocoder decode check and disables the vocoder if that check fails. In
-`full_decode` mode, a missing megakernel vocoder falls back to official
-Qwen voice-clone synthesis when reference audio/text are configured.
-
-For Base-model voice cloning on the megakernel path, provide a reference clip
-and its transcript:
+`chunked` mode pushes audio to Pipecat as chunks are decoded instead of waiting
+for a full utterance. If the vocoder path is unstable on a given environment,
+set:
 
 ```bash
-export QWEN_TTS_REF_AUDIO=/path/to/reference.wav
-export QWEN_TTS_REF_TEXT="Exact transcript of the reference audio."
+QWEN_TTS_STREAMING_MODE=full_decode
 ```
 
-This builds the official Qwen3-TTS voice-clone prompt once during warmup,
-injects the speaker embedding into the megakernel talker prefill, and uses ICL
-reference text/code conditioning. If you only want the x-vector speaker
-embedding and no reference-code ICL, set `QWEN_TTS_X_VECTOR_ONLY=true`.
+In `full_decode` mode, if the megakernel vocoder path is unavailable and
+reference audio/text are configured, the service falls back to official Qwen
+voice-clone synthesis rather than emitting silence.
 
-Before running the full browser demo, the lightweight checks are:
+Reference prompt failures are non-fatal by default so the bot can still start.
+Set `QWEN_TTS_REQUIRE_REF_PROMPT=true` if you want startup to fail hard when the
+reference prompt cannot be built. Set both of these to empty strings to disable
+reference prompting:
 
 ```bash
-python3 -m py_compile bot.py qwen_megakernel/pipecat_tts.py qwen_megakernel/tts_engine.py
-python3 -c "import qwen_megakernel; print('ok')"
+QWEN_TTS_REF_AUDIO=
+QWEN_TTS_REF_TEXT=
+```
+
+## Environment
+
+This is intended for:
+
+- NVIDIA RTX 5090 / Blackwell `sm_120a`
+- CUDA 12.8+
+- PyTorch CUDA 12.8 build
+- Python 3.10+
+
+Install:
+
+```bash
+pip install -r requirements.txt
+```
+
+If PyTorch needs to be installed manually:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+Quick GPU sanity check:
+
+```bash
+nvidia-smi
+python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+## Run It
+
+Original text megakernel benchmark:
+
+```bash
+python -m qwen_megakernel.bench
+```
+
+Standalone TTS to WAV:
+
+```bash
 python demo_tts.py "Hello, this is a test." --output /tmp/tts.wav
+```
+
+Streaming TTS demo with TTFC/RTF reporting:
+
+```bash
 python demo_pipeline.py --text "Hello from the streaming pipeline."
 ```
 
-The WebRTC bot logs startup and runtime metrics at `INFO`, including service
-initialization, TTS warmup time, client connect/disconnect, pipeline
-start/stop, first-audio latency, generated audio duration, wall-clock TTS
-duration, RTF, per-chunk wall gaps, per-chunk audio duration, chunk count, and
-output byte counts. File and console logs default to `INFO`; set
-`QWEN_TTS_FILE_LOG_LEVEL=DEBUG` or `QWEN_TTS_PIPECAT_FILE_LOG_LEVEL=DEBUG` only
-when byte/frame-level diagnostics are needed.
+Text-only Pipecat TTS service test:
 
-Implementation notes and risks are tracked in
-[`QWEN3_TTS_PIPECAT_PLAN.md`](QWEN3_TTS_PIPECAT_PLAN.md). The current
-implementation status and runbook are in
-[`QWEN3_TTS_IMPLEMENTATION_README.md`](QWEN3_TTS_IMPLEMENTATION_README.md).
+```bash
+python demo_voice_agent.py --text-only
+```
 
-### Credits
+Full Pipecat WebRTC demo:
 
-Based on Elliot Arledge's [MegaQwen](https://github.com/Infatoshi/MegaQwen) for the RTX 3090 GPU.
-
----
-
-• To expose your app port on Vast.ai, add a Docker port mapping when creating/editing the instance.
-
-For this repo’s WebRTC bot on internal port 7860, use Docker create options:
-
--p 7860:7860 -e OPEN_BUTTON_PORT=7860
-
-Then run the bot inside the instance bound to all interfaces:
-
+```bash
+export DEEPGRAM_API_KEY=...
+export OPENAI_API_KEY=...
 python bot.py -t webrtc --host 0.0.0.0 --port 7860
-
-After the instance starts, open IP Port Info in Vast.ai and find the mapping for 7860/tcp, for example:
-
-65.130.162.74:33526 -> 7860/tcp
+```
 
 Then open:
 
+```text
+http://localhost:7860/client
+```
+
+Daily mode for Vast/cloud:
+
+```bash
+export DAILY_API_KEY=...
+export DEEPGRAM_API_KEY=...
+export OPENAI_API_KEY=...
+python bot.py -t daily --host 0.0.0.0 --port 7860
+```
+
+I use Daily as the browser/WebRTC interface for the hosted demo. The direct
+Pipecat WebRTC transport is useful locally, but on Vast/cloud the browser is
+usually behind NAT/port mapping and ICE can be brittle. Daily creates the room,
+handles WebRTC signaling/NAT traversal, and gives me a stable URL for the human
+participant. The logs print the Daily room URL; join that URL from the browser.
+
+This is also the command I use for whole-pipeline metrics: the bot attaches
+Pipecat's metrics observer and user-to-bot latency observer, so service timings
+and end-to-end voice-turn latency are emitted directly in the run log.
+
+## Vast.ai Port Mapping
+
+For the WebRTC app on internal port `7860`, create the instance with:
+
+```bash
+-p 7860:7860 -e OPEN_BUTTON_PORT=7860
+```
+
+Run the bot bound to all interfaces:
+
+```bash
+python bot.py -t webrtc --host 0.0.0.0 --port 7860
+```
+
+Then use the external Vast port mapping, for example:
+
+```text
+65.130.162.74:33526 -> 7860/tcp
+```
+
+Open:
+
+```text
 http://65.130.162.74:33526/client
+```
 
-Important details:
+Do not use `localhost` from your laptop for a Vast instance. The app must bind
+to `0.0.0.0`.
 
-- The external port will usually be random.
-- Do not use localhost from your laptop; use the Vast public IP and mapped external port.
-- The app must bind to 0.0.0.0, not 127.0.0.1.
-- OPEN_BUTTON_PORT=7860 makes the Vast “Open” button target the mapped external port for internal 7860.
+## Validation Order
+
+I use this order on the RTX 5090 machine:
+
+1. `python3 -m py_compile bot.py qwen_megakernel/pipecat_tts.py qwen_megakernel/tts_engine.py`
+2. `python -m qwen_megakernel.bench`
+3. `python demo_tts.py "Hello" --output /tmp/tts.wav`
+4. `python demo_pipeline.py --text "Hello from streaming."`
+5. `python benchmark.py --runs 3`
+6. `python demo_voice_agent.py --text-only`
+7. Full browser/Daily Pipecat voice demo
+
+Detailed benchmark entry points:
+
+```bash
+python -m benchmarks.measure_tok_s
+python -m benchmarks.measure_ttfc
+python -m benchmarks.measure_rtf
+python -m benchmarks.measure_e2e
+```
+
+The full Daily/WebRTC command logs whole voice-turn metrics directly; I do not
+run a separate parser. Look for `Voice pipeline latency user_to_bot_ms=...` and
+`Voice pipeline latency breakdown:` in the bot log.
+
+## Metrics and Logs
+
+The bot logs startup and runtime metrics at `INFO`, including:
+
+- whole user-to-bot response latency from Pipecat's `UserBotLatencyObserver`
+- per-service metrics from Pipecat's `MetricsLogObserver`
+- TTS warmup duration
+- client connect/disconnect
+- first-audio latency / TTFC
+- per-chunk wall gap
+- per-chunk audio duration
+- total generated audio duration
+- wall-clock TTS duration
+- RTF
+- chunk count
+- output bytes
+
+Logs default to `INFO`. Use these only when debugging low-level Pipecat or audio
+frame behavior:
+
+```bash
+QWEN_TTS_FILE_LOG_LEVEL=DEBUG
+QWEN_TTS_PIPECAT_FILE_LOG_LEVEL=DEBUG
+```
+
+For the final report I would include two groups of metrics:
+
+- **Megakernel/TTS metrics** from `benchmark.py` and `benchmarks.measure_*`:
+  decode tok/s, TTFC, RTF, chunk count, and inter-chunk timing.
+- **Whole pipeline metrics** from the normal `python bot.py -t daily ...` run:
+  user-to-bot latency, first bot speech latency, service TTFB/processing
+  breakdowns, TTS service latency, TTS RTF, and end-to-end turn notes from the
+  real Pipecat/Daily demo.
+
+## What To Submit
+
+For the take-home I would include:
+
+- this repo with the build/run instructions above,
+- a short demo video showing me joining the voice agent, speaking, and hearing
+  the agent reply,
+- benchmark output for megakernel tok/s, TTFC, RTF, and end-to-end latency,
+- the environment used for the run: GPU, CUDA, PyTorch, model revision, and env
+  vars,
+- an honest note about any fallbacks used during the recording.
+
+## Current Caveats
+
+- The talker decode path is megakernel-backed. The official Qwen vocoder is
+  still used for codec-to-waveform audio.
+- `chunked` mode is the default because the assignment requires streaming audio
+  into Pipecat. `full_decode` remains available as a stability fallback.
+- The voice-clone prompt is cached in `~/.cache/qwen_megakernel` after the first
+  successful build.
+- The code predictor is accelerated through the megakernel wrapper, but the
+  per-group `2048`-way heads are still outside the kernel.
+- I did not implement full Qwen3-TTS M-RoPE in CUDA. The current implementation
+  follows the pragmatic integration path and uses a frame cap to avoid runaway
+  generation if EOS behavior is unreliable.
+- The service refuses to emit silent audio. If the vocoder fails and no official
+  fallback is available, the Pipecat TTS frame returns an error instead.
+
+## Files To Review
+
+- CUDA kernel changes: `csrc/kernel.cu`, `csrc/torch_bindings.cpp`
+- TTS extension build: `qwen_megakernel/build_tts.py`
+- Qwen3-TTS weights and wrappers: `qwen_megakernel/model_tts.py`
+- TTS orchestration: `qwen_megakernel/tts_engine.py`
+- Pipecat service: `qwen_megakernel/pipecat_tts.py`
+- Voice bot: `bot.py`
+
+## Credits
+
+Based on Elliot Arledge's MegaQwen / Qwen megakernel work:
+
+- https://github.com/AlpinDale/qwen_megakernel
+- https://blog.alpindale.net/posts/5090_decode_optimization/

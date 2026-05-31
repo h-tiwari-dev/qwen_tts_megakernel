@@ -141,6 +141,8 @@ The voice bot defaults favor natural TTS quality:
 ```bash
 QWEN_TTS_REF_AUDIO=https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav
 QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
+QWEN_TTS_CHUNK_FRAMES=2
+QWEN_TTS_STREAMING_MODE=chunked
 QWEN_TTS_WARMUP_PROFILE=fast
 QWEN_TTS_VOICE_PROMPT_CACHE=1
 QWEN_TTS_VOICE_PROMPT_CACHE_DIR=~/.cache/qwen_megakernel

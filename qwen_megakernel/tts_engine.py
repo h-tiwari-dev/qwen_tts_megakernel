@@ -601,14 +601,12 @@ class MegakernelTTSEngine:
                 self._cached_tts_embeds["eos"],
             ], dim=0)
 
-        # Phase 1: Prefill — feed all prefill embeddings through the talker
+        # Phase 1: Prefill — feed all prefill embeddings through the talker.
+        # Uses a no-sync batched helper so the N kernel launches are queued
+        # back-to-back on the CUDA stream and we pay only one GPU→CPU sync.
         self._log(f"Running talker prefill ({prefill_embeds.shape[0]} step(s))...")
         t0 = time.perf_counter()
-        first_token = None
-        hidden = None
-        for i in range(prefill_embeds.shape[0]):
-            first_token, hidden = self.talker.step_with_embed(prefill_embeds[i])
-        self._sync()
+        first_token, hidden = self.talker.prefill_with_embeds(prefill_embeds)
         self._log(f"Talker prefill done in {time.perf_counter() - t0:.2f}s")
 
         # Phase 2: Autoregressive decode

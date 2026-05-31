@@ -329,6 +329,65 @@ class TTSDecoder:
         self._position += 1
         return self._out_token.item(), self._norm_out.clone()
 
+    def prefill_with_embeds(self, embeds: torch.Tensor) -> tuple[int, torch.Tensor]:
+        """Queue N decode steps over precomputed embeddings with no per-step CPU sync.
+
+        Equivalent to calling ``step_with_embed`` in a loop and discarding all
+        outputs except the last, but queues all N kernel launches on the CUDA
+        stream back-to-back and only syncs once at the end. This avoids the N×
+        GPU→CPU round-trip cost of ``.item()`` in a Python prefill loop.
+
+        Args:
+            embeds: bf16 tensor of shape ``[N, HIDDEN_SIZE]`` on CUDA. Each row
+                is fed into the decoder at successive positions starting from
+                ``self._position``. ``N`` must be ≥ 1.
+
+        Returns:
+            ``(last_token_id, last_hidden_state_f32)`` for row ``N-1``. All
+            earlier rows' outputs are overwritten in scratch buffers.
+        """
+        n = embeds.shape[0]
+        if n == 0:
+            raise ValueError("prefill_with_embeds requires at least one embedding")
+        if embeds.dim() != 2 or embeds.shape[1] != HIDDEN_SIZE:
+            raise ValueError(
+                f"embeds must be [N, {HIDDEN_SIZE}] bf16; got shape {tuple(embeds.shape)}"
+            )
+
+        for i in range(n):
+            self._hidden.copy_(embeds[i])
+            self._decode(
+                self._out_token,
+                EMBED_FROM_BUFFER,
+                self._embed_weight,
+                self._layer_weights_packed,
+                self._final_norm_weight,
+                self._lm_head_weight,
+                self._cos_table,
+                self._sin_table,
+                self._k_cache,
+                self._v_cache,
+                self._hidden,
+                self._act,
+                self._res,
+                self._q,
+                self._k,
+                self._v,
+                self._attn_out,
+                self._mlp_inter,
+                self._norm_out,
+                self._bmax_vals,
+                self._bmax_idxs,
+                NUM_LAYERS,
+                self._position,
+                MAX_SEQ_LEN,
+                self._attn_scale,
+            )
+            self._position += 1
+
+        torch.cuda.synchronize()
+        return self._out_token.item(), self._norm_out.clone()
+
     def reset(self):
         """Reset decoder state for a new utterance."""
         self._position = 0

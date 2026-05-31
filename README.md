@@ -25,6 +25,71 @@ The original megakernel benchmark from this repo is still available:
 
 More context on the original kernel: https://blog.alpindale.net/posts/5090_decode_optimization/
 
+## Post-Integration Optimisations
+
+After the initial integration was working, a code review identified several
+performance and correctness issues. These were fixed in follow-up commits:
+
+### CUDA kernel (`csrc/kernel.cu`)
+
+**Spin-wait backoff** — `AtomicGridSync::sync()` spun with an empty
+`while (*vgen <= my_gen) {}` loop, hammering L2 with back-to-back reads from
+128 concurrent CTAs. Added `__nanosleep(64)` inside the loop to yield each warp
+for ~64 ns per iteration, meaningfully reducing L2 bandwidth pressure and power
+draw during barriers.
+
+**Gated speculative L2 prefetch** — Non-attention blocks (16–127) prefetched
+O/gate/up/down weight rows before the KV cache was necessarily ready. Added a
+`kv_flag` spin (with `__nanosleep` backoff) at the top of the prefetch block,
+mirroring the pattern already used by attention blocks 1–15. Prefetch now only
+fires after block 0 signals KV-cache ready, eliminating L2 pollution on short
+sequences.
+
+### Decode loop (`qwen_megakernel/tts_engine.py`)
+
+**Batched codec group embeddings** — The autoregressive decode loop launched 16
+separate `F.embedding()` calls (one per codebook group) and 15 intermediate
+tensor additions per codec frame. Replaced with a single loop over
+`self._all_embed_tables` (a list built at init time) using in-place `.add_()`
+to avoid 15 tensor allocations per step.
+
+**Trailing text exhaustion log** — When trailing text embeddings run out mid-
+utterance the engine silently padded with `tts_pad_embed`. Added a one-shot log
+message at the first pad frame so voice tone shifts are diagnosable.
+
+**Vocoder self-test at init** — The vocoder was not validated until synthesis
+time. Added a single dummy `speech_tokenizer.decode()` call immediately after
+loading. If it fails, the vocoder is disabled with a log message instead of
+silently failing later after all codec frames have been generated.
+
+### Parallel prefill (`qwen_megakernel/model_tts.py`)
+
+**Zero-copy KV expand** — Inside `prefill_parallel`'s layer loop,
+`k_sdpa.repeat_interleave(repeat_factor, dim=1)` allocated a new
+`[1, Hq, T, D]` tensor on every one of 28 layers. Replaced with
+`.expand(-1, NUM_Q_HEADS, -1, -1)`, which is a zero-copy view. SDPA accepts
+non-contiguous tensors from `expand()` correctly.
+
+### Pipecat service (`qwen_megakernel/pipecat_tts.py`)
+
+**Narrowed TTS lock scope** — The `_tts_lock` was held for the entire synthesis
+and streaming phase. Any second TTS request (e.g. an interruption) would block
+completely until audio delivery finished. Restructured so the lock covers only
+the GPU compute phase; PCM encoding and frame delivery happen outside the lock.
+
+### Bot pipeline (`bot.py`)
+
+**VAD stop_secs via env var** — `stop_secs=0.2` was hardcoded in three separate
+`SileroVADAnalyzer` instantiations. Replaced with `BOT_VAD_STOP_SECS` env var
+(default `0.2`) defined once per entry function.
+
+**ContextWindowTrimmer growth guard** — The trimmer ran on every `LLMRunFrame`
+regardless of whether the context had grown. Added a `_last_len` counter so
+trimming is skipped when the conversational message count hasn't increased since
+the last trim.
+
+---
+
 ## What I Changed
 
 I added a Qwen3-TTS path alongside the original text decode path:

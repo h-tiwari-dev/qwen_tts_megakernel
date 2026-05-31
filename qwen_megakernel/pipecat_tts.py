@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     Frame,
     TTSAudioRawFrame,
 )
+from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
 from .tts_engine import MegakernelTTSEngine, TTSConfig
@@ -57,7 +58,11 @@ class MegakernelTTSService(TTSService):
         sample_rate: Optional[int] = None,
         **kwargs,
     ):
-        super().__init__(sample_rate=sample_rate or 24000, **kwargs)
+        settings = kwargs.pop(
+            "settings",
+            TTSSettings(model=model_path, voice=None, language=None),
+        )
+        super().__init__(sample_rate=sample_rate or 24000, settings=settings, **kwargs)
 
         self._config = TTSConfig(
             model_path=model_path,

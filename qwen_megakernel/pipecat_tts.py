@@ -194,15 +194,36 @@ class MegakernelTTSService(TTSService):
         return np.asarray(wavs[0], dtype=np.float32), sr
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        # Collect all PCM chunks under the lock (covers GPU synthesis), then
+        # yield the wrapped Pipecat frames outside so the lock is not held
+        # during downstream audio delivery (which can be slow / back-pressured).
+        pcm_chunks: list[bytes] = []
+        synthesized_sample_rate: int = self._engine.sample_rate if self._engine else 24000
         async with self._tts_lock:
-            async for frame in self._run_tts_locked(text, context_id):
-                yield frame
+            async for pcm in self._synthesize_pcm(text, context_id):
+                pcm_chunks.append(pcm)
+                # Capture the final sample rate set during synthesis.
+                synthesized_sample_rate = self._engine.sample_rate if self._engine else 24000
 
-    async def _run_tts_locked(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
-        """Generate streaming speech from text using the megakernel.
+        async def _pcm_iter():
+            for chunk in pcm_chunks:
+                yield chunk
 
-        Yields audio frames as codec frames are generated and decoded,
-        pushing audio to the pipeline chunk by chunk.
+        async for frame in self._stream_audio_frames_from_iterator(
+            _pcm_iter(),
+            in_sample_rate=synthesized_sample_rate,
+            context_id=context_id,
+        ):
+            await self.stop_ttfb_metrics()
+            yield frame
+
+    async def _synthesize_pcm(self, text: str, context_id: str) -> AsyncGenerator[bytes, None]:
+        """Run GPU synthesis and yield raw PCM16 bytes.
+
+        Must be called while ``self._tts_lock`` is held.  All compute
+        (encoder, talker decoder, vocoder) happens here; the caller is
+        responsible for wrapping the bytes into Pipecat frames *after*
+        the lock is released.
         """
         logger.debug(f"{self}: Generating TTS [{text}]")
         utterance_started = time.perf_counter()
@@ -347,13 +368,8 @@ class MegakernelTTSService(TTSService):
                     previous_chunk_at = chunk_ready_at
                     yield pcm16
 
-            async for frame in self._stream_audio_frames_from_iterator(
-                audio_chunk_iterator(),
-                in_sample_rate=self._engine.sample_rate if self._engine else 24000,
-                context_id=context_id,
-            ):
-                await self.stop_ttfb_metrics()
-                yield frame
+            async for pcm in audio_chunk_iterator():
+                yield pcm
 
         except Exception as e:
             logger.error(f"{self} TTS exception: {e}")

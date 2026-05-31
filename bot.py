@@ -221,20 +221,27 @@ async def run_bot(transport):
 
         Keeps every ``system``/``developer`` message plus the last
         ``max_messages`` conversational turns; older entries are dropped.
+        Only trims when the conversational message count has grown past the
+        limit since the last trim, avoiding unnecessary work on every frame.
         """
 
         def __init__(self, ctx, max_messages: int):
             super().__init__()
             self._ctx = ctx
             self._max = max_messages
+            self._last_len = 0  # track last seen convo length
 
         def _trim(self):
             msgs = list(self._ctx.messages)
             convo = [m for m in msgs if m.get("role") not in ("system", "developer")]
             if len(convo) <= self._max:
+                self._last_len = len(convo)
                 return
+            if len(convo) <= self._last_len:
+                return  # hasn't grown since last trim
             anchors = [m for m in msgs if m.get("role") in ("system", "developer")]
             self._ctx.set_messages(anchors + convo[-self._max:])
+            self._last_len = min(len(convo), self._max)
 
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
@@ -246,6 +253,8 @@ async def run_bot(transport):
             await self.push_frame(frame, direction)
 
     require_env("DEEPGRAM_API_KEY", "OPENAI_API_KEY")
+
+    vad_stop_secs = float(os.getenv("BOT_VAD_STOP_SECS", "0.2"))
 
     logger.info("Initializing Deepgram STT service")
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
@@ -272,7 +281,7 @@ async def run_bot(transport):
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)),
         ),
     )
 
@@ -381,6 +390,7 @@ async def bot(runner_args):
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.daily.transport import DailyParams
 
+    vad_stop_secs = float(os.getenv("BOT_VAD_STOP_SECS", "0.2"))
     logger.info("Creating runner transport for args=%s", type(runner_args).__name__)
     room_url = getattr(runner_args, "room_url", None)
     if room_url:
@@ -392,13 +402,13 @@ async def bot(runner_args):
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 audio_out_sample_rate=24000,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)),
             ),
             "webrtc": lambda: TransportParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 audio_out_sample_rate=24000,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)),
             ),
         },
     )

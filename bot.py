@@ -293,8 +293,7 @@ async def run_bot(transport):
     runner = PipelineRunner()
     logger.info("Starting Pipecat pipeline runner")
     try:
-        runner.add_workers([task])
-        await runner.run()
+        await runner.run(task)
     finally:
         logger.info("Pipecat pipeline runner stopped")
 

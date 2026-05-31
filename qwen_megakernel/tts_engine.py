@@ -297,7 +297,7 @@ class MegakernelTTSEngine:
         if warmup_profile == "off":
             warmup_modes = []
         elif warmup_profile == "fast":
-            warmup_modes = [False, True]
+            warmup_modes = [False]
         else:
             warmup_modes = [False, False, True, True, True]
         self._log(
@@ -328,6 +328,26 @@ class MegakernelTTSEngine:
                 f"in {time.perf_counter() - t0:.2f}s"
             )
         self.talker.reset()
+
+        # Run a full synthesis warmup using the actual voice-clone prefill path
+        # so that prefill_parallel, cuBLAS GEMMs, and the vocoder are all hot
+        # before the first real utterance. Without this, the first call pays
+        # ~6s of cold-start cost (CUDA kernel JIT, cuBLAS plan caching, HBM
+        # cold pages) even though the talker/CP decode steps above are warm.
+        if warmup_profile != "off":
+            self._log("Warming up full synthesis path (voice-clone prefill + vocoder)...")
+            t0 = time.perf_counter()
+            try:
+                warmup_text = "Hello."
+                # Consume the full generator to drive all GPU work
+                for _ in self._generate_codec_frames(warmup_text):
+                    pass
+                self.talker.reset()
+                self._sync()
+                self._log(f"Full synthesis warmup done in {time.perf_counter() - t0:.2f}s")
+            except Exception as exc:
+                self._log(f"Full synthesis warmup failed (non-fatal): {exc}")
+                self.talker.reset()
         if self.speech_tokenizer is not None:
             if warmup_profile == "off":
                 vocoder_warmup_frames = []

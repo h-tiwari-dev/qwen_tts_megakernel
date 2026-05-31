@@ -510,14 +510,21 @@ class MegakernelTTSEngine:
             except ValueError:
                 pass  # Already registered
 
-            # Load speech tokenizer from subfolder
-            model = AutoModel.from_pretrained(
-                vocoder_path,
+            # Load speech tokenizer from subfolder.
+            # transformers 5.x renamed dtype= to torch_dtype=; try both.
+            load_kwargs = dict(
                 subfolder='speech_tokenizer',
-                dtype=torch.bfloat16,
                 low_cpu_mem_usage=False,
                 trust_remote_code=True,
             )
+            try:
+                model = AutoModel.from_pretrained(
+                    vocoder_path, torch_dtype=torch.bfloat16, **load_kwargs
+                )
+            except TypeError:
+                model = AutoModel.from_pretrained(
+                    vocoder_path, dtype=torch.bfloat16, **load_kwargs
+                )
             try:
                 model = model.to(target_device)
             except NotImplementedError as exc:
@@ -537,7 +544,31 @@ class MegakernelTTSEngine:
             self._log(f"Vocoder loaded (sample rate: {self.sample_rate} Hz)")
             return
         except Exception as e:
-            self._log(f"Vocoder load failed: {e}")
+            self._log(f"Manual vocoder loader failed: {e}")
+
+        # Last resort: load Qwen3TTSTokenizer directly from the speech_tokenizer subfolder
+        try:
+            import os
+            from huggingface_hub import snapshot_download
+            from qwen_tts import Qwen3TTSTokenizer
+
+            if os.path.isdir(vocoder_path):
+                subfolder_path = os.path.join(vocoder_path, "speech_tokenizer")
+            else:
+                local_dir = snapshot_download(vocoder_path)
+                subfolder_path = os.path.join(local_dir, "speech_tokenizer")
+
+            self.speech_tokenizer = Qwen3TTSTokenizer.from_pretrained(
+                subfolder_path,
+                device_map=target_device,
+                dtype=torch.bfloat16,
+                attn_implementation="eager",
+            )
+            self.sample_rate = self.speech_tokenizer.get_output_sample_rate()
+            self._log(f"Vocoder loaded via subfolder path (sample rate: {self.sample_rate} Hz)")
+            return
+        except Exception as e:
+            self._log(f"Vocoder load failed (all loaders exhausted): {e}")
 
         self.speech_tokenizer = None
         self.sample_rate = self.config.sample_rate

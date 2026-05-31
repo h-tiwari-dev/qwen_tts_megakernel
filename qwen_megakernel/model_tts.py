@@ -426,9 +426,9 @@ class TTSDecoder:
             q_sdpa = q.transpose(0, 1).unsqueeze(0)                            # [1, Hq, N, D]
             k_sdpa = self._k_cache[layer, :, :tkv, :].unsqueeze(0)             # [1, Hkv, tkv, D]
             v_sdpa = self._v_cache[layer, :, :tkv, :].unsqueeze(0)
-            # GQA: repeat K/V to match Q head count for cross-version SDPA support
-            k_sdpa = k_sdpa.repeat_interleave(repeat_factor, dim=1)
-            v_sdpa = v_sdpa.repeat_interleave(repeat_factor, dim=1)
+            # GQA: zero-copy expand instead of repeat_interleave to avoid allocation
+            k_sdpa = k_sdpa.expand(-1, NUM_Q_HEADS, -1, -1)                    # [1, Hq, tkv, D]
+            v_sdpa = v_sdpa.expand(-1, NUM_Q_HEADS, -1, -1)
 
             if start_pos == 0:
                 attn = F.scaled_dot_product_attention(

@@ -216,6 +216,9 @@ class MegakernelTTSEngine:
             self._cp_embeds.append(
                 weights["code_predictor"][f"codec_embedding.{g}.weight"]  # [2048, 1024]
             )
+        # Stacked list of all 16 embedding tables (talker first, then cp_embeds).
+        # Used in the decode loop for a single enumerated pass with in-place add_.
+        self._all_embed_tables = [self._talker_embed] + self._cp_embeds
 
         # Load tokenizer (text)
         self._log("Loading text tokenizer...")
@@ -225,6 +228,17 @@ class MegakernelTTSEngine:
 
         # Load speech tokenizer (vocoder)
         self._timed(f"Loading vocoder from {cfg.vocoder_path}", lambda: self._load_vocoder(cfg.vocoder_path))
+
+        # Vocoder self-test: run a minimal decode to verify the decoder path works.
+        if self.speech_tokenizer is not None:
+            try:
+                dummy_codes = torch.zeros(1, NUM_CODE_GROUPS, dtype=torch.long, device=self.device)
+                _ = self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
+                self._log("Vocoder self-test passed")
+            except Exception as exc:
+                self._log(f"Vocoder self-test failed ({exc}); disabling vocoder")
+                self.speech_tokenizer = None
+                self.sample_rate = self.config.sample_rate
 
         if cfg.ref_audio:
             try:
@@ -665,22 +679,20 @@ class MegakernelTTSEngine:
 
             yield all_codes
 
-            # Compute next input: sum of all codec group embeddings
-            # Use slice indexing (all_codes[i:i+1]) to avoid GPU→CPU sync
-            embed_sum = torch.nn.functional.embedding(
-                all_codes[0:1], self._talker_embed,
-            ).squeeze(0)
-
-            for g in range(NUM_CODE_GROUPS - 1):
-                embed_sum = embed_sum + torch.nn.functional.embedding(
-                    all_codes[g + 1:g + 2], self._cp_embeds[g],
-                ).squeeze(0)
+            # Compute next input: sum of all codec group embeddings.
+            # Use in-place add_ to avoid 15 intermediate tensor allocations.
+            embed_sum = torch.zeros(HIDDEN_SIZE, dtype=torch.bfloat16, device=self.device)
+            for g, table in enumerate(self._all_embed_tables):
+                embed_sum.add_(torch.nn.functional.embedding(all_codes[g:g + 1], table).squeeze(0))
 
             # Add trailing text embedding
             if trailing_idx < trailing_text.shape[0]:
                 embed_sum = embed_sum + trailing_text[trailing_idx].to(torch.bfloat16)
                 trailing_idx += 1
             else:
+                if trailing_idx == trailing_text.shape[0]:
+                    self._log(f"Trailing text exhausted at frame {step}; padding remaining frames")
+                    trailing_idx += 1  # advance so this only logs once
                 embed_sum = embed_sum + tts_pad_embed
 
             prev_token, hidden = self.talker.step_with_embed(embed_sum)

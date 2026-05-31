@@ -293,7 +293,8 @@ async def run_bot(transport):
     runner = PipelineRunner()
     logger.info("Starting Pipecat pipeline runner")
     try:
-        await runner.run(task)
+        runner.add_workers([task])
+        await runner.run()
     finally:
         logger.info("Pipecat pipeline runner stopped")
 
@@ -305,6 +306,9 @@ async def bot(runner_args):
     from pipecat.transports.daily.transport import DailyParams
 
     logger.info("Creating runner transport for args=%s", type(runner_args).__name__)
+    room_url = getattr(runner_args, "room_url", None)
+    if room_url:
+        logger.info("Daily room URL for participant join: %s", room_url)
     transport = await create_transport(
         runner_args,
         {

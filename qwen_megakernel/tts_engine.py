@@ -318,9 +318,9 @@ class MegakernelTTSEngine:
             if warmup_profile == "off":
                 vocoder_warmup_frames = []
             elif warmup_profile == "fast":
-                vocoder_warmup_frames = [1, 5]
+                vocoder_warmup_frames = []
             else:
-                vocoder_warmup_frames = [1, 1, 5]
+                vocoder_warmup_frames = [5]
             self._log(
                 "Warming up vocoder "
                 f"(profile={warmup_profile}, {len(vocoder_warmup_frames)} pass(es): "
@@ -337,12 +337,21 @@ class MegakernelTTSEngine:
                     f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
                     "decoding dummy audio..."
                 )
-                self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
-                self._sync()
-                self._log(
-                    f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
-                    f"done in {time.perf_counter() - t0:.2f}s"
-                )
+                try:
+                    self.speech_tokenizer.decode([{"audio_codes": dummy_codes}])
+                    self._sync()
+                    self._log(
+                        f"Vocoder warmup {i}/{len(vocoder_warmup_frames)} "
+                        f"done in {time.perf_counter() - t0:.2f}s"
+                    )
+                except Exception as exc:
+                    self._log(
+                        "Vocoder warmup decode failed; marking vocoder unavailable "
+                        f"to avoid runtime crashes: {type(exc).__name__}: {exc}"
+                    )
+                    self.speech_tokenizer = None
+                    self.sample_rate = self.config.sample_rate
+                    break
         else:
             self._log("Skipping vocoder warmup because vocoder is unavailable")
         self._sync()

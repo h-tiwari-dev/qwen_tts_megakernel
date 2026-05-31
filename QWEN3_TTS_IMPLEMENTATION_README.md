@@ -144,6 +144,7 @@ QWEN_TTS_REF_TEXT="Okay. Yeah. I resent you. I love you. I respect you. But you 
 QWEN_TTS_WARMUP_PROFILE=fast
 QWEN_TTS_VOICE_PROMPT_CACHE=1
 QWEN_TTS_VOICE_PROMPT_CACHE_DIR=~/.cache/qwen_megakernel
+QWEN_TTS_REQUIRE_REF_PROMPT=false
 QWEN_TTS_DO_SAMPLE=true
 QWEN_TTS_TEMPERATURE=0.8
 QWEN_TTS_TOP_K=50
@@ -155,8 +156,9 @@ QWEN_TTS_SUBTALKER_TOP_K=50
 The reference audio/text come from the official Qwen3-TTS voice-clone example.
 The first startup builds and caches the voice-clone prompt; later restarts
 reuse it. For deterministic debugging, override both sampling flags to `false`.
-To disable reference prompting, set `QWEN_TTS_REF_AUDIO=` and
-`QWEN_TTS_REF_TEXT=`.
+Reference prompt failures are non-fatal by default so the bot can still start;
+set `QWEN_TTS_REQUIRE_REF_PROMPT=true` to fail fast. To disable reference
+prompting, set `QWEN_TTS_REF_AUDIO=` and `QWEN_TTS_REF_TEXT=`.
 
 Full Pipecat voice agent:
 
